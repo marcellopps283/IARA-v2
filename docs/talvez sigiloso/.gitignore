@@ -1,0 +1,54 @@
+# Segredos e Configurações Locais
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+token.json
+client_secret*.json
+
+# Bancos de Dados (SQLite e Memória)
+*.db
+*.db-journal
+*.sqlite3
+kitty_memory.db
+kitty_mem.db
+
+# Python (Cache e Ambientes Virtuais)
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+env/
+venv/
+.venv/
+.env/
+
+# Node / Frontend (Dependências e Build)
+node_modules/
+dist/
+dist-ssr/
+*.local
+.eslintcache
+.stylelintcache
+
+# Logs e Relatórios
+*.log
+logs/
+research/
+*_report.md
+
+# IDEs e Sistema Operacional
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Arquivos Temporários e Referências do Projeto
+frontend.zip
+v0_layout/
+Kitty_Shadow/
+.agents/
+tmp/
