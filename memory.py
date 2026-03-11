@@ -167,11 +167,12 @@ async def search_episodes(query: str, limit: int = 3) -> list[str]:
 
     qdrant = get_qdrant()
     try:
-        results = await qdrant.search(
+        res = await qdrant.query_points(
             collection_name=QDRANT_COLLECTION,
-            query_vector=vector,
+            query=vector,
             limit=limit,
         )
+        results = res.points
         return [r.payload["summary"] for r in results if r.score > 0.3]
     except Exception as e:
         logger.warning(f"⚠️ Qdrant search failed: {e}")

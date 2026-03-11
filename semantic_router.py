@@ -55,12 +55,13 @@ async def classify_intent(text: str) -> tuple[str, float]:
 
     qdrant = get_qdrant()
     try:
-        results = await qdrant.search(
+        res = await qdrant.query_points(
             collection_name=COLLECTION_NAME,
-            query_vector=vector,
+            query=vector,
             limit=1,
             with_payload=True,
         )
+        results = res.points
         
         if not results:
             return "chat_agent", 0.0
