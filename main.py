@@ -23,33 +23,63 @@ WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 ptb_app = None
 
 import brain
+import ops_bot
 
 async def start_command(update: Update, context):
     await update.message.reply_text(
-        "🧠 IARA Core Online.\n"
+        "🧠 *IARA Core Online.*\n"
         "Operando via VPS com roteamento multi-LLM.\n"
-        "Manda qualquer mensagem!"
+        "Sociedade de Agentes ativa: Swarm + Council.\n\n"
+        "Manda qualquer mensagem!",
+        parse_mode="Markdown",
     )
 
 async def handle_message(update: Update, context):
-    """Route incoming messages through the brain pipeline."""
+    """Route incoming messages through the brain pipeline with streaming UX."""
     user_text = update.message.text
     chat_id = update.message.chat.id
     logger.info(f"📩 [{chat_id}] {user_text[:80]}")
 
-    # Show typing indicator while thinking
-    await update.message.chat.send_action("typing")
+    # Detect intent for status message
+    from brain import classify_intent, council
+    intent, _ = classify_intent(user_text)
+
+    status_icons = {
+        "chat": "🧠 Pensando...",
+        "reasoning": "🧠 Raciocinando...",
+        "execute_code": "🐳 Executando código...",
+        "url_read": "🌐 Lendo URL...",
+        "save_memory": "💾 Salvando...",
+        "recall_memory": "🧠 Recordando...",
+        "search": "🔍 Pesquisando...",
+    }
+
+    # Check if council debate
+    if council.should_use_council(user_text):
+        status_text = "⚖️ Convocando o Conselho...\n🔵 Blue Team → 🔴 Red Team → ⚖️ Síntese"
+    else:
+        status_text = status_icons.get(intent, "🧠 Pensando...")
+
+    # Send placeholder (edit-in-place streaming)
+    placeholder = await update.message.reply_text(status_text)
 
     # Process through brain
-    response = await brain.process(user_text, chat_id)
+    try:
+        response = await brain.process(user_text, chat_id)
 
-    # Send response (split if too long for Telegram's 4096 char limit)
-    if len(response) <= 4096:
-        await update.message.reply_text(response)
-    else:
-        # Split into chunks
-        for i in range(0, len(response), 4096):
-            await update.message.reply_text(response[i:i+4096])
+        # Edit the placeholder with the real response
+        if len(response) <= 4096:
+            await placeholder.edit_text(response)
+        else:
+            # First chunk replaces placeholder, rest are new messages
+            await placeholder.edit_text(response[:4096])
+            for i in range(4096, len(response), 4096):
+                await update.message.reply_text(response[i:i+4096])
+
+    except Exception as e:
+        logger.error(f"❌ handle_message error: {e}", exc_info=True)
+        await placeholder.edit_text(f"❌ Erro: {str(e)[:200]}")
+        await ops_bot.log_error(e, f"Chat {chat_id}: {user_text[:100]}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -99,7 +129,10 @@ async def lifespan(app: FastAPI):
     if not webhook_active:
         # Start polling in the background
         await ptb_app.updater.start_polling(drop_pending_updates=True)
-    
+
+    # Notify ops bot
+    await ops_bot.log_startup()
+
     yield  # Let FastAPI run and process HTTP requests
     
     # Shutdown PTB when FastAPI shuts down
