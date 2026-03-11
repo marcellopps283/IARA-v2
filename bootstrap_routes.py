@@ -127,14 +127,45 @@ ROUTE_DEFINITIONS = {
             "votação sobre a melhor abordagem",
         ],
     },
-    "agent_dispatcher__swarm": {
-        "description": "Delegar tarefa para agentes do Swarm em background",
+    "swarm__coder": {
+        "description": "Especialista em programação, código e debug",
         "utterances": [
-            "delega essa tarefa pro swarm",
-            "manda um agente revisar esse código",
-            "joga no swarm para processar",
-            "cria um agente pesquisador para isso",
-            "pede pro swarm analisar esse log",
+            "cria um script em python para",
+            "encontra o bug nesse código",
+            "refatora essa função",
+            "escreve um dockerfile",
+            "como eu faço um endpoint em fastapi?",
+            "revisa esse meu código",
+        ],
+    },
+    "swarm__researcher": {
+        "description": "Pesquisa profunda, comparação e análise",
+        "utterances": [
+            "faz uma pesquisa aprofundada sobre",
+            "compare postgres com qdrant",
+            "quais são os prós e contras de",
+            "analise detalhadamente",
+            "procure artigos científicos sobre",
+        ],
+    },
+    "swarm__planner": {
+        "description": "Planejamento, roadmap, arquitetura de software",
+        "utterances": [
+            "o que acha dessa arquitetura?",
+            "cria um plano de projeto para",
+            "qual o roadmap ideal para aprender",
+            "decomponha esse problema em etapas",
+            "desenhe a arquitetura desse sistema",
+        ],
+    },
+    "swarm__creative": {
+        "description": "Geração criativa, brainstorming, nomes, estórias",
+        "utterances": [
+            "me dê ideias criativas para",
+            "brainstorm de nomes para minha startup",
+            "escreve uma história sobre",
+            "inventa um roteiro original",
+            "como eu posso pensar diferente sobre",
         ],
     },
     "tools_executor__url_read": {
@@ -174,15 +205,24 @@ VECTOR_SIZE = 1024  # multilingual-e5-large output dimension
 
 
 async def get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Gera embeddings via Infinity TEI microservice."""
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{TEI_URL}/embeddings",
-            json={"input": texts, "model": "intfloat/multilingual-e5-large"},
-        )
-        response.raise_for_status()
-        data = response.json()
-        return [item["embedding"] for item in data["data"]]
+    """Gera embeddings via Infinity TEI microservice (em chunks para evitar OOM)."""
+    CHUNK_SIZE = 1
+    all_embeddings = []
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for i in range(0, len(texts), CHUNK_SIZE):
+            chunk = texts[i:i+CHUNK_SIZE]
+            response = await client.post(
+                f"{TEI_URL}/embeddings",
+                json={"input": chunk, "model": "intfloat/multilingual-e5-large"},
+            )
+            if response.status_code != 200:
+                logger.error(f"⚠️ Erro no chunk {i}: {response.text}")
+            response.raise_for_status()
+            data = response.json()
+            all_embeddings.extend([item["embedding"] for item in data["data"]])
+            
+    return all_embeddings
 
 
 def setup_qdrant_collection(client: QdrantClient):

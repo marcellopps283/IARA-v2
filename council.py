@@ -153,19 +153,3 @@ Sintetize a melhor resposta combinando ambas as perspectivas."""},
         return f"🔵 **Blue Team:**\n{blue_response}\n\n🔴 **Red Team:**\n{red_response}\n\n⚠️ Síntese automática falhou."
 
 
-def should_use_council(text: str) -> bool:
-    """Detect if the topic warrants a full council debate."""
-    text_lower = text.lower()
-
-    council_triggers = [
-        "conselho", "council", "debate",
-        "analise criticamente", "analisa criticamente",
-        "prós e contras", "pros e contras",
-        "devo ou não", "vale a pena",
-        "compare as opções", "qual a melhor abordagem",
-        "blue team", "red team",
-        "decisão importante", "decisão crítica",
-        "arquitetura ideal", "convoca o conselho",
-    ]
-
-    return any(kw in text_lower for kw in council_triggers)

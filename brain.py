@@ -1,14 +1,19 @@
 """
-brain.py — IARA Core Brain (Clean VPS Architecture)
-Pipeline: receive → classify intent → execute tool → call LLM → respond.
+brain.py — IARA Core Brain (LangGraph StateGraph Architecture)
+Pipeline: receive → semantic route → execute node → format → respond.
 
-This is a clean rewrite designed for the VPS stack.
-The old Termux brain.py is reference only.
+Rewritten from if/elif to LangGraph StateGraph for robust state management
+and deterministic routing via Semantic Router (Qdrant embeddings).
+
+The public interface remains: process(text, chat_id) -> str
 """
 
 import logging
 import re
 from datetime import datetime
+from typing import TypedDict
+
+from langgraph.graph import StateGraph, END
 
 import config
 from llm_router import LLMRouter
@@ -17,101 +22,55 @@ import sandbox
 import mcp_client
 import swarm
 import council
+import semantic_router
 
 logger = logging.getLogger("brain")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CODE_BLOCK_REGEX = re.compile(r'```(?:python)?\n(.+?)```', re.DOTALL)
-
-CODE_KEYWORDS = [
-    "executa", "execute", "roda esse código", "roda isso",
-    "testa esse código", "run this", "eval",
-]
-
-# Intent Detection — Keywords (fast, no LLM call)
+# State Definition
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-SEARCH_KEYWORDS = [
-    "pesquisa", "pesquisar", "busca", "buscar", "procura", "procurar",
-    "search", "google", "qual o preço", "quanto custa",
-    "quanto tá", "cotação", "notícia", "noticias", "news",
-]
 
-REASONING_KEYWORDS = [
-    "aprofunde", "aprofunda", "detalha", "explique detalhadamente",
-    "refatora", "pense passo a passo", "complexo", "arquitetura",
-    "analise criticamente", "pense como especialista",
-]
-
-MEMORY_SAVE_KEYWORDS = [
-    "lembra que", "lembre que", "memoriza", "memorize",
-    "guarda isso", "salva isso", "anota isso", "não esquece",
-    "grava isso", "registra",
-]
-
-MEMORY_RECALL_KEYWORDS = [
-    "o que você sabe sobre mim", "o que sabe de mim",
-    "o que você lembra", "o que lembra de mim",
-    "minhas preferências", "meus dados",
-]
-
-URL_REGEX = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
-
-
-def classify_intent(text: str) -> tuple[str, str | None]:
-    """Fast keyword-based intent classification."""
-    text_lower = text.lower().strip()
-
-    # Code block detected → sandbox execution
-    code_match = CODE_BLOCK_REGEX.search(text)
-    if code_match:
-        return ("execute_code", code_match.group(1).strip())
-
-    for kw in CODE_KEYWORDS:
-        if kw in text_lower:
-            return ("execute_code", text)
-
-    urls = URL_REGEX.findall(text)
-    if urls:
-        return ("url_read", urls[0])
-
-    for kw in MEMORY_SAVE_KEYWORDS:
-        if kw in text_lower:
-            fact = text_lower
-            for k in MEMORY_SAVE_KEYWORDS:
-                fact = fact.replace(k, "").strip()
-            return ("save_memory", fact or text)
-
-    for kw in MEMORY_RECALL_KEYWORDS:
-        if kw in text_lower:
-            return ("recall_memory", None)
-
-    for kw in REASONING_KEYWORDS:
-        if kw in text_lower:
-            return ("reasoning", None)
-
-    for kw in SEARCH_KEYWORDS:
-        if kw in text_lower:
-            query = text_lower
-            for k in SEARCH_KEYWORDS:
-                query = query.replace(k, "").strip()
-            return ("search", query or text)
-
-    return ("chat", None)
+class IaraState(TypedDict, total=False):
+    """State that flows through the LangGraph pipeline."""
+    text: str                    # User input
+    chat_id: int                 # Telegram chat ID
+    intent: str                  # Resolved route name from semantic router
+    score: float                 # Semantic similarity score
+    response: str                # Final response to user
+    core_facts: list[dict]       # From Postgres (permanent memory)
+    episodes: list[str]          # From Qdrant (episodic memory)
+    conversation: list[dict]     # From Redis (working memory)
+    task_type: str               # For LLM router prioritization
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Brain Core — Main Processing Pipeline
+# Utilities
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-router: LLMRouter | None = None
+# Global LLM Router (lazy init)
+_router: LLMRouter | None = None
 
 
 def get_router() -> LLMRouter:
-    global router
-    if router is None:
-        router = LLMRouter()
-    return router
+    global _router
+    if _router is None:
+        _router = LLMRouter()
+    return _router
+
+
+def _extract_url(text: str) -> str | None:
+    """Extract first URL from text if present."""
+    match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+', text)
+    return match.group(0) if match else None
+
+
+def _extract_code(text: str) -> str | None:
+    """Extract code from generic markdown blocks."""
+    match = re.search(r'```(?:python)?\s*(.*?)\s*```', text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
 
 
 def build_system_prompt(core_facts: list[dict] | None = None, episodes: list[str] | None = None) -> str:
@@ -146,117 +105,160 @@ Responda sempre em português brasileiro, de forma direta e inteligente.
 Você é a IARA rodando na VPS — autônoma, rápida, com memória semântica."""
 
 
-async def process(text: str, chat_id: int) -> str:
-    """
-    Main brain pipeline.
-    1. Save user message to working memory
-    2. Classify intent
-    3. Execute memory actions if needed
-    4. Retrieve memory context
-    5. Build prompt with conversation + memory
-    6. Call LLM
-    7. Save assistant response to working memory
-    """
-    r = get_router()
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LangGraph Nodes
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    # 1. Save user message to Redis
-    await memory.save_message(chat_id, "user", text)
 
-    # 2. Classify intent
-    intent, extra = classify_intent(text)
-    logger.info(f"🎯 Intent: {intent} | Extra: {extra}")
+async def router_node(state: IaraState) -> dict:
+    """Classify intent via Semantic Router (Qdrant embeddings)."""
+    text = state["text"]
 
-    # 3. Handle memory intents directly
-    if intent == "save_memory" and extra:
-        await memory.save_core_fact("fato", extra)
-        response = f"✅ Memorizado: \"{extra}\""
-        await memory.save_message(chat_id, "assistant", response)
-        return response
+    # Save user message to Redis working memory
+    await memory.save_message(state["chat_id"], "user", text)
 
-    if intent == "recall_memory":
+    # Semantic classification
+    intent, score = await semantic_router.classify_intent(text)
+    logger.info(f"🎯 Semantic Intent: {intent} (score: {score:.3f})")
+
+    # Determine task_type for LLM router prioritization
+    task_type = "chat"
+    if "research" in intent or "search" in intent:
+        task_type = "reasoning"
+    elif "code" in intent or "sandbox" in intent:
+        task_type = "code"
+
+    return {"intent": intent, "score": score, "task_type": task_type}
+
+
+async def memory_node(state: IaraState) -> dict:
+    """Load memory layers for chat context (core facts + episodes + conversation)."""
+    text = state["text"]
+    chat_id = state["chat_id"]
+
+    core_facts = await memory.get_core_facts(limit=5)
+    episodes = await memory.search_episodes(text, limit=3)
+    conversation = await memory.get_conversation(chat_id)
+
+    return {
+        "core_facts": core_facts or [],
+        "episodes": episodes or [],
+        "conversation": conversation or [],
+    }
+
+
+async def tools_node(state: IaraState) -> dict:
+    """Handle tool-based intents: sandbox, URL, memory save/recall, security."""
+    intent = state["intent"]
+    text = state["text"]
+    response = None
+
+    # ── Sandbox (code execution) ──
+    if intent == "tools_executor__sandbox":
+        code = _extract_code(text) or text
+        logger.info("🐳 Executing code in sandbox...")
+        output = await sandbox.execute_python(code)
+        response = f"🐳 **Resultado da execução:**\n```\n{output}\n```"
+
+    # ── URL reading ──
+    elif intent == "tools_executor__url_read":
+        url = _extract_url(text)
+        if not url:
+            response = "⚠️ Você esqueceu de incluir a URL na mensagem."
+        else:
+            logger.info(f"🌐 Fetching URL: {url}")
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        content = await resp.text()
+                if len(content) > 8000:
+                    content = content[:8000] + "\n[... truncado]"
+                r = get_router()
+                messages = [
+                    {"role": "system", "content": build_system_prompt()},
+                    {"role": "user", "content": f"O usuário enviou esta URL: {url}\n\nConteúdo da página:\n{content}\n\nMensagem original: {text}"}
+                ]
+                response = await r.generate(messages=messages, task_type="chat", temperature=0.5)
+                response = response or "Não consegui processar o conteúdo."
+            except Exception as e:
+                logger.warning(f"⚠️ URL fetch failed: {e}")
+                response = f"⚠️ Não consegui acessar essa URL: {e}"
+
+    # ── Memory save ──
+    elif intent == "tools_executor__save_memory":
+        await memory.save_core_fact("fato_semantico", text)
+        response = "✅ Memorizado contextualmente."
+
+    # ── Memory recall ──
+    elif intent == "tools_executor__recall_memory":
         facts = await memory.get_core_facts(limit=20)
         if facts:
             facts_text = "\n".join(f"• [{f['category']}] {f['content']}" for f in facts)
             response = f"🧠 **Tudo que sei sobre você:**\n\n{facts_text}"
         else:
-            response = "🧠 Ainda não tenho fatos permanentes salvos sobre você."
-        await memory.save_message(chat_id, "assistant", response)
-        return response
+            response = "🧠 Ainda não tenho fatos permanentes salvos."
 
-    # 3b. Handle code execution via Docker sandbox
-    if intent == "execute_code" and extra:
-        logger.info(f"🐳 Executing code in sandbox...")
-        output = await sandbox.execute_python(extra)
-        response = f"🐳 **Resultado da execução:**\n```\n{output}\n```"
-        await memory.save_message(chat_id, "assistant", response)
-        return response
+    # ── Security blocked ──
+    elif intent == "security__blocked":
+        response = "🛡️ **Acesso Negado**: Tentativa de injeção de prompt ou violação de regras detectada."
 
-    # 3c. Handle URL reading via aiohttp
-    if intent == "url_read" and extra:
-        logger.info(f"🌐 Fetching URL: {extra}")
-        try:
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.get(extra, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    content = await resp.text()
-            if len(content) > 8000:
-                content = content[:8000] + "\n[... truncado]"
-            messages = [
-                {"role": "system", "content": build_system_prompt()},
-                {"role": "user", "content": f"O usuário enviou esta URL: {extra}\n\nConteúdo da página:\n{content}\n\nMensagem original: {text}"}
-            ]
-            r = get_router()
-            response = await r.generate(messages=messages, task_type="chat", temperature=0.5)
-            response = response or "Não consegui processar o conteúdo."
-        except Exception as e:
-            logger.warning(f"⚠️ URL fetch failed: {e}")
-            response = f"⚠️ Não consegui acessar essa URL: {e}"
-        await memory.save_message(chat_id, "assistant", response)
-        return response
+    # ── Fallback for other tools_executor intents ──
+    elif response is None:
+        response = f"⚙️ Ferramenta '{intent}' ainda não implementada."
 
-    # 3d. Council debate (adversarial analysis)
-    if council.should_use_council(text):
-        logger.info("⚖️ Invoking Council debate...")
-        response = await council.debate(text)
-        await memory.save_message(chat_id, "assistant", response)
-        return response
+    return {"response": response}
 
-    # 3e. Specialist dispatch (Swarm)
-    specialist = swarm.detect_specialist(text)
-    if specialist:
-        logger.info(f"🐝 Delegating to specialist: {specialist}")
-        conversation = await memory.get_conversation(chat_id)
-        context = "\n".join(f"{m['role']}: {m['content']}" for m in conversation[-6:])
-        response = await swarm.dispatch(specialist, text, context=context)
-        await memory.save_message(chat_id, "assistant", response)
-        return response
 
-    # 4. Retrieve memory context
-    task_type = "reasoning" if intent == "reasoning" else "chat"
-    core_facts = await memory.get_core_facts(limit=5)
-    episodes = await memory.search_episodes(text, limit=3)
+async def council_node(state: IaraState) -> dict:
+    """Run Council adversarial debate (Blue Team vs Red Team → Synthesis)."""
+    text = state["text"]
+    logger.info("⚖️ Invoking Council debate...")
+    response = await council.debate(text)
+    return {"response": response}
 
-    # 5. Build messages with conversation history
-    system_prompt = build_system_prompt(core_facts=core_facts, episodes=episodes)
+
+async def swarm_node(state: IaraState) -> dict:
+    """Dispatch to a Swarm specialist (Coder, Researcher, Planner, Creative)."""
+    intent = state["intent"]
+    text = state["text"]
+    chat_id = state["chat_id"]
+
+    specialist = intent.replace("swarm__", "")
+    logger.info(f"🐝 Delegating to specialist: {specialist}")
+
     conversation = await memory.get_conversation(chat_id)
+    context = "\n".join(f"{m['role']}: {m['content']}" for m in (conversation or [])[-6:])
+    response = await swarm.dispatch(specialist, text, context=context)
+
+    return {"response": response}
+
+
+async def chat_node(state: IaraState) -> dict:
+    """Standard chat / conversational reasoning via LLM."""
+    text = state["text"]
+    task_type = state.get("task_type", "chat")
+
+    system_prompt = build_system_prompt(
+        core_facts=state.get("core_facts"),
+        episodes=state.get("episodes"),
+    )
 
     messages = [{"role": "system", "content": system_prompt}]
     # Add conversation history (already includes the current user message)
+    conversation = state.get("conversation", [])
     messages.extend(conversation)
 
-    # 6. Call LLM
+    r = get_router()
     try:
         response = await r.generate(
             messages=messages,
             task_type=task_type,
             temperature=0.7,
         )
-
         if isinstance(response, dict):
             response = f"[Tool Call] {response}"
-
         response = response or "..."
-
     except RuntimeError as e:
         logger.error(f"❌ All LLM providers failed: {e}")
         response = "⚠️ Desculpa Criador, todos os meus cérebros falharam. Tenta de novo!"
@@ -264,7 +266,16 @@ async def process(text: str, chat_id: int) -> str:
         logger.error(f"❌ Brain error: {e}", exc_info=True)
         response = f"❌ Erro interno: {str(e)[:200]}"
 
-    # 7. Save assistant response + episodic memory
+    return {"response": response}
+
+
+async def formatter_node(state: IaraState) -> dict:
+    """Save response to working memory + episodic memory (Qdrant)."""
+    text = state["text"]
+    chat_id = state["chat_id"]
+    response = state.get("response", "...")
+
+    # Save assistant response to Redis
     await memory.save_message(chat_id, "assistant", response)
 
     # Feed episodic memory (Qdrant) with summary
@@ -274,4 +285,116 @@ async def process(text: str, chat_id: int) -> str:
     except Exception as e:
         logger.warning(f"⚠️ Episodic save failed: {e}")
 
-    return response
+    return {"response": response}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Conditional Routing
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def route_by_intent(state: IaraState) -> str:
+    """Conditional edge: route to the correct node based on semantic intent."""
+    intent = state.get("intent", "chat_agent")
+
+    if intent.startswith("tools_executor") or intent == "security__blocked":
+        return "tools_node"
+    elif intent == "council_debate":
+        return "council_node"
+    elif intent.startswith("swarm__"):
+        return "swarm_node"
+    else:
+        # chat_agent, web_search fallback, deep_research, etc.
+        return "memory_node"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Graph Assembly
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def build_graph() -> StateGraph:
+    """
+    Build the IARA brain graph:
+
+        entry → router_node → ──┬─ tools_node ────────┬──→ formatter_node → END
+                                 │                     │
+                                 ├─ council_node ──────┤
+                                 │                     │
+                                 ├─ swarm_node ────────┤
+                                 │                     │
+                                 └─ memory_node → chat_node
+    """
+    graph = StateGraph(IaraState)
+
+    # Add nodes
+    graph.add_node("router_node", router_node)
+    graph.add_node("memory_node", memory_node)
+    graph.add_node("tools_node", tools_node)
+    graph.add_node("council_node", council_node)
+    graph.add_node("swarm_node", swarm_node)
+    graph.add_node("chat_node", chat_node)
+    graph.add_node("formatter_node", formatter_node)
+
+    # Entry point
+    graph.set_entry_point("router_node")
+
+    # Conditional routing after intent classification
+    graph.add_conditional_edges(
+        "router_node",
+        route_by_intent,
+        {
+            "tools_node": "tools_node",
+            "council_node": "council_node",
+            "swarm_node": "swarm_node",
+            "memory_node": "memory_node",
+        },
+    )
+
+    # Memory → Chat (sequential: load memory, then generate)
+    graph.add_edge("memory_node", "chat_node")
+
+    # All execution nodes → formatter
+    graph.add_edge("tools_node", "formatter_node")
+    graph.add_edge("council_node", "formatter_node")
+    graph.add_edge("swarm_node", "formatter_node")
+    graph.add_edge("chat_node", "formatter_node")
+
+    # Formatter → END
+    graph.add_edge("formatter_node", END)
+
+    return graph
+
+
+# Compile the graph once at module level
+_compiled_graph = build_graph().compile()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Public API (stable interface for main.py)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def process(text: str, chat_id: int) -> str:
+    """
+    Main brain entry point — invokes the LangGraph pipeline.
+    Interface is identical to the old if/elif brain: process(text, chat_id) -> str
+    """
+    initial_state: IaraState = {
+        "text": text,
+        "chat_id": chat_id,
+        "intent": "",
+        "score": 0.0,
+        "response": "",
+        "core_facts": [],
+        "episodes": [],
+        "conversation": [],
+        "task_type": "chat",
+    }
+
+    try:
+        result = await _compiled_graph.ainvoke(initial_state)
+        return result.get("response", "...")
+    except Exception as e:
+        logger.error(f"❌ LangGraph pipeline error: {e}", exc_info=True)
+        return f"❌ Erro no pipeline: {str(e)[:200]}"

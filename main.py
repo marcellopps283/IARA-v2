@@ -40,28 +40,9 @@ async def handle_message(update: Update, context):
     chat_id = update.message.chat.id
     logger.info(f"📩 [{chat_id}] {user_text[:80]}")
 
-    # Detect intent for status message
-    from brain import classify_intent, council
-    intent, _ = classify_intent(user_text)
-
-    status_icons = {
-        "chat": "🧠 Pensando...",
-        "reasoning": "🧠 Raciocinando...",
-        "execute_code": "🐳 Executando código...",
-        "url_read": "🌐 Lendo URL...",
-        "save_memory": "💾 Salvando...",
-        "recall_memory": "🧠 Recordando...",
-        "search": "🔍 Pesquisando...",
-    }
-
-    # Check if council debate
-    if council.should_use_council(user_text):
-        status_text = "⚖️ Convocando o Conselho...\n🔵 Blue Team → 🔴 Red Team → ⚖️ Síntese"
-    else:
-        status_text = status_icons.get(intent, "🧠 Pensando...")
-
     # Send placeholder (edit-in-place streaming)
-    placeholder = await update.message.reply_text(status_text)
+    # Intent is now resolved internally by brain.process() via Semantic Router
+    placeholder = await update.message.reply_text("🧠 Processando...")
 
     # Process through brain
     try:

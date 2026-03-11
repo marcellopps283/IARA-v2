@@ -118,7 +118,7 @@ def _get_router() -> LLMRouter:
 
 async def dispatch(specialist_name: str, task: str, context: str = "") -> str:
     """
-    Dispatch a task to a specialist agent.
+    Dispatch a task to a single specialist agent.
     Returns the specialist's response.
     """
     spec = SPECIALISTS.get(specialist_name.lower())
@@ -147,41 +147,37 @@ async def dispatch(specialist_name: str, task: str, context: str = "") -> str:
         return f"❌ {spec.role} falhou: {e}"
 
 
-def detect_specialist(text: str) -> str | None:
+async def dispatch_parallel(specialist_names: list[str], task: str, context: str = "") -> str:
     """
-    Auto-detect which specialist should handle this task.
-    Returns specialist name or None for general chat.
+    Dispatch a task to multiple specialists simultaneously (MoA pattern).
+    Returns a unified response combining all their outputs.
     """
-    text_lower = text.lower()
+    import asyncio
+    
+    valid_names = [name for name in specialist_names if name.lower() in SPECIALISTS]
+    if not valid_names:
+        return "❌ Nenhum especialista válido fornecido para execução paralela."
 
-    # Code-related keywords
-    code_kw = ["código", "codigo", "função", "funcao", "classe", "debug",
-               "bug", "erro no código", "implementa", "programa", "script",
-               "refatora", "refactor", "api", "endpoint", "docker", "git"]
-    for kw in code_kw:
-        if kw in text_lower:
-            return "coder"
+    logger.info(f"🐝🚀 Parallel dispatch to: {', '.join(valid_names)}")
+    
+    # Run all specialists concurrently with a timeout
+    async def _run_one(name: str):
+        try:
+            return await asyncio.wait_for(dispatch(name, task, context), timeout=60.0)
+        except asyncio.TimeoutError:
+            return f"❌ Especialista {name} expirou (timeout 60s)."
+        except Exception as e:
+            return f"❌ Especialista {name} falhou: {e}"
 
-    # Research keywords
-    research_kw = ["pesquisa aprofundada", "artigo", "paper", "estudo",
-                   "compare", "diferença entre", "prós e contras",
-                   "análise detalhada", "analise detalhada"]
-    for kw in research_kw:
-        if kw in text_lower:
-            return "researcher"
+    results = await asyncio.gather(*[_run_one(name) for name in valid_names])
+    
+    # Combine results
+    combined = []
+    for name, result in zip(valid_names, results):
+        spec = SPECIALISTS.get(name.lower())
+        role_title = spec.role if spec else name
+        combined.append(f"### {role_title}\n{result}\n")
+        
+    return "\n".join(combined)
 
-    # Planning keywords
-    plan_kw = ["planeje", "plano", "roadmap", "cronograma", "milestone",
-               "desenhe a arquitetura", "estratégia", "etapas para"]
-    for kw in plan_kw:
-        if kw in text_lower:
-            return "planner"
 
-    # Creative keywords
-    creative_kw = ["crie", "invente", "imagine", "história", "estória",
-                   "ideia para", "brainstorm", "nome para"]
-    for kw in creative_kw:
-        if kw in text_lower:
-            return "creative"
-
-    return None

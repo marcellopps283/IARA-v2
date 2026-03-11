@@ -62,15 +62,24 @@ services:
   infinity:
     image: michaelf34/infinity:latest
     restart: unless-stopped
-    command: v2 --model-id ${TEI_MODEL:-intfloat/multilingual-e5-large} --port 7997
+    command: v2 --model-id ${TEI_MODEL:-intfloat/multilingual-e5-large} --host 0.0.0.0 --port 7997
+    environment:
+      - INFINITY_HOST=0.0.0.0
+      - INFINITY_PORT=7997
     volumes:
       - infinity_cache:/app/.cache
     ports:
       - "127.0.0.1:7997:7997"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7997/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 3G
 
   # ── IARA Core (O Cérebro) ──────────────────────────────
   iara-core:
@@ -94,7 +103,7 @@ services:
       qdrant:
         condition: service_started
       infinity:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   pgdata:
