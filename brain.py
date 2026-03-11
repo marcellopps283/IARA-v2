@@ -15,6 +15,8 @@ from llm_router import LLMRouter
 import memory
 import sandbox
 import mcp_client
+import swarm
+import council
 
 logger = logging.getLogger("brain")
 
@@ -209,6 +211,23 @@ async def process(text: str, chat_id: int) -> str:
         except Exception as e:
             logger.warning(f"⚠️ URL fetch failed: {e}")
             response = f"⚠️ Não consegui acessar essa URL: {e}"
+        await memory.save_message(chat_id, "assistant", response)
+        return response
+
+    # 3d. Council debate (adversarial analysis)
+    if council.should_use_council(text):
+        logger.info("⚖️ Invoking Council debate...")
+        response = await council.debate(text)
+        await memory.save_message(chat_id, "assistant", response)
+        return response
+
+    # 3e. Specialist dispatch (Swarm)
+    specialist = swarm.detect_specialist(text)
+    if specialist:
+        logger.info(f"🐝 Delegating to specialist: {specialist}")
+        conversation = await memory.get_conversation(chat_id)
+        context = "\n".join(f"{m['role']}: {m['content']}" for m in conversation[-6:])
+        response = await swarm.dispatch(specialist, text, context=context)
         await memory.save_message(chat_id, "assistant", response)
         return response
 
