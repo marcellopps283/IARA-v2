@@ -13,7 +13,7 @@ logger = logging.getLogger("semantic_router")
 
 _qdrant: AsyncQdrantClient | None = None
 COLLECTION_NAME = "routes"
-MIN_SCORE_THRESHOLD = 0.82  # Cosine similarity threshold
+MIN_SCORE_THRESHOLD = 0.75  # Cosine similarity threshold
 
 
 def get_qdrant() -> AsyncQdrantClient:

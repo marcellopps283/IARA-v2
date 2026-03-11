@@ -224,7 +224,10 @@ async def swarm_node(state: IaraState) -> dict:
     text = state["text"]
     chat_id = state["chat_id"]
 
-    specialist = intent.replace("swarm__", "")
+    if intent == "tools_executor__deep_research":
+        specialist = "researcher"
+    else:
+        specialist = intent.replace("swarm__", "")
     logger.info(f"🐝 Delegating to specialist: {specialist}")
 
     conversation = await memory.get_conversation(chat_id)
@@ -297,7 +300,9 @@ def route_by_intent(state: IaraState) -> str:
     """Conditional edge: route to the correct node based on semantic intent."""
     intent = state.get("intent", "chat_agent")
 
-    if intent.startswith("tools_executor") or intent == "security__blocked":
+    if intent == "tools_executor__deep_research":
+        return "swarm_node"
+    elif intent.startswith("tools_executor") or intent == "security__blocked":
         return "tools_node"
     elif intent == "council_debate":
         return "council_node"
