@@ -125,6 +125,11 @@ ROUTE_DEFINITIONS = {
             "reunião do conselho",
             "analisem esse problema de vários ângulos",
             "votação sobre a melhor abordagem",
+            "convoca o conselho para debatermos sobre",
+            "aciona o conselho para avaliar qual a melhor arquitetura",
+            "reúne o conselho para comparar ferramentas e frameworks",
+            "quero o conselho debatendo os prós e contras",
+            "conselho, avaliem se devemos usar a opção A ou B",
         ],
     },
     "swarm__coder": {
