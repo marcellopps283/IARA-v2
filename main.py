@@ -22,15 +22,34 @@ WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 
 ptb_app = None
 
+import brain
+
 async def start_command(update: Update, context):
-    await update.message.reply_text("Iara Core Online. Estou operando via Webhook no novo ecossistema VPS!")
+    await update.message.reply_text(
+        "🧠 IARA Core Online.\n"
+        "Operando via VPS com roteamento multi-LLM.\n"
+        "Manda qualquer mensagem!"
+    )
 
 async def handle_message(update: Update, context):
-    # This is a temporary placeholder.
-    # TODO: Connect this to orchestrator.py / brain.py for full MoE processing.
+    """Route incoming messages through the brain pipeline."""
     user_text = update.message.text
-    logger.info(f"Received message: {user_text}")
-    await update.message.reply_text(f"[IARA VPS TESTER] Recebi sua mensagem: {user_text}")
+    chat_id = update.message.chat.id
+    logger.info(f"📩 [{chat_id}] {user_text[:80]}")
+
+    # Show typing indicator while thinking
+    await update.message.chat.send_action("typing")
+
+    # Process through brain
+    response = await brain.process(user_text, chat_id)
+
+    # Send response (split if too long for Telegram's 4096 char limit)
+    if len(response) <= 4096:
+        await update.message.reply_text(response)
+    else:
+        # Split into chunks
+        for i in range(0, len(response), 4096):
+            await update.message.reply_text(response[i:i+4096])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
