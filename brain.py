@@ -137,7 +137,7 @@ async def memory_node(state: IaraState) -> dict:
     chat_id = state["chat_id"]
 
     core_facts = await memory.get_core_facts(limit=5)
-    episodes = await memory.search_episodes(text, limit=3)
+    episodes = await memory.search_episodes(text, chat_id=chat_id, limit=3)
     conversation = await memory.get_conversation(chat_id)
 
     return {
@@ -181,6 +181,12 @@ async def tools_node(state: IaraState) -> dict:
                 ]
                 response = await r.generate(messages=messages, task_type="chat", temperature=0.5)
                 response = response or "Não consegui processar o conteúdo."
+                
+                # Injetar o texto longo no Grafo de Conhecimento em background
+                import asyncio
+                import memory_manager
+                asyncio.create_task(memory_manager.ingest_knowledge_graph(content))
+
             except Exception as e:
                 logger.warning(f"⚠️ URL fetch failed: {e}")
                 response = f"⚠️ Não consegui acessar essa URL: {e}"
@@ -233,6 +239,12 @@ async def swarm_node(state: IaraState) -> dict:
     conversation = await memory.get_conversation(chat_id)
     context = "\n".join(f"{m['role']}: {m['content']}" for m in (conversation or [])[-6:])
     response = await swarm.dispatch(specialist, text, context=context)
+
+    # Alimentar o Grafo de Conhecimento se for pesquisa profunda
+    if specialist == "researcher" and response:
+        import asyncio
+        import memory_manager
+        asyncio.create_task(memory_manager.ingest_knowledge_graph(response))
 
     return {"response": response}
 

@@ -17,6 +17,7 @@ from qdrant_client.models import (
 )
 
 import config
+import memory_manager
 
 logger = logging.getLogger("memory")
 
@@ -138,45 +139,18 @@ async def get_conversation(chat_id: int) -> list[dict]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async def save_episode(summary: str, chat_id: int):
-    """Save a conversation summary as a searchable episode in Qdrant."""
-    vector = await embed(summary)
-    if not vector:
-        logger.warning("⚠️ Skipping episode save — embedding failed")
-        return
-
-    qdrant = get_qdrant()
-    import uuid
-    point = PointStruct(
-        id=str(uuid.uuid4()),
-        vector=vector,
-        payload={
-            "summary": summary,
-            "chat_id": chat_id,
-            "timestamp": datetime.now().isoformat(),
-        },
-    )
-    await qdrant.upsert(collection_name=QDRANT_COLLECTION, points=[point])
-    logger.info(f"📝 Episode saved to Qdrant: {summary[:60]}...")
+    """Save a conversation summary as a searchable episode in Mem0."""
+    await memory_manager.add_core_memory(summary, user_id=f"session_{chat_id}")
+    logger.info(f"📝 Episode saved to Mem0: {summary[:60]}...")
 
 
-async def search_episodes(query: str, limit: int = 3) -> list[str]:
-    """Search episodic memory for relevant past conversations."""
-    vector = await embed(query)
-    if not vector:
+async def search_episodes(query: str, chat_id: int, limit: int = 3) -> list[str]:
+    """Search episodic memory for relevant past conversations in Mem0."""
+    results_str = await memory_manager.search_core_memory(query, user_id=f"session_{chat_id}", limit=limit)
+    if not results_str:
         return []
-
-    qdrant = get_qdrant()
-    try:
-        res = await qdrant.query_points(
-            collection_name=QDRANT_COLLECTION,
-            query=vector,
-            limit=limit,
-        )
-        results = res.points
-        return [r.payload["summary"] for r in results if r.score > 0.3]
-    except Exception as e:
-        logger.warning(f"⚠️ Qdrant search failed: {e}")
-        return []
+    
+    return [line.lstrip("- ").strip() for line in results_str.split("\n") if line.strip()]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -218,29 +192,20 @@ async def init_postgres():
 
 
 async def save_core_fact(category: str, content: str, confidence: float = 1.0):
-    """Save a permanent fact to Postgres core memory."""
-    if not _pg_pool:
-        logger.warning("⚠️ Postgres pool not initialized")
-        return
-    async with _pg_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO core_memory (category, content, confidence, updated_at)
-            VALUES ($1, $2, $3, NOW())
-            ON CONFLICT (content) DO UPDATE SET
-                confidence = EXCLUDED.confidence,
-                updated_at = NOW()
-        """, category, content, confidence)
-        logger.info(f"💾 Core fact saved: [{category}] {content[:60]}")
+    """Save a permanent fact to Mem0 core memory."""
+    await memory_manager.add_core_memory(f"[{category}] {content}", user_id="creator")
+    logger.info(f"💾 Core fact saved via Mem0: [{category}] {content[:60]}")
 
 
 async def get_core_facts(limit: int = 10) -> list[dict]:
-    """Retrieve permanent facts from Postgres."""
-    if not _pg_pool:
+    """Retrieve permanent facts from Mem0."""
+    results_str = await memory_manager.search_core_memory("Preferências e fatos importantes", user_id="creator", limit=limit)
+    if not results_str:
         return []
-    async with _pg_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT category, content, confidence FROM core_memory ORDER BY confidence DESC, updated_at DESC LIMIT $1",
-            limit,
-        )
-    return [{"category": r["category"], "content": r["content"], "confidence": r["confidence"]} for r in rows]
+    
+    facts = []
+    for line in results_str.split("\n"):
+        if line.strip():
+            facts.append({"category": "mem0", "content": line.lstrip("- ").strip(), "confidence": 1.0})
+    return facts
 
