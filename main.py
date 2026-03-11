@@ -53,24 +53,41 @@ async def lifespan(app: FastAPI):
     await ptb_app.initialize()
 
     # Determine if we use Webhook or Polling mode
-    if WEBHOOK_URL:
-        logger.info(f"Setting webhook URL to {WEBHOOK_URL}")
-        # Drop pending updates to avoid a flood of old messages when starting
-        await ptb_app.bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
-    else:
-        logger.warning("No WEBHOOK_URL set. The /webhook endpoint won't be called by Telegram.")
-        # Optionally, one could start polling here: await ptb_app.updater.start_polling()
-        # But this code enforces Webhook mode for the VPS architecture as per Phase 2.
+    webhook_active = False
+    if WEBHOOK_URL and "seudominio" not in WEBHOOK_URL:
+        try:
+            logger.info(f"Setting webhook URL to {WEBHOOK_URL}")
+            await ptb_app.bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+            webhook_active = True
+            logger.info("✅ Webhook configurado com sucesso!")
+        except Exception as e:
+            logger.warning(f"⚠️ Falha ao configurar webhook ({e}). Usando polling como fallback.")
+    
+    if not webhook_active:
+        logger.info("🔄 Iniciando em modo POLLING (webhook não disponível).")
+        # Delete any stale webhook before starting polling
+        try:
+            await ptb_app.bot.delete_webhook(drop_pending_updates=True)
+        except Exception:
+            pass
 
     await ptb_app.start()
+
+    if not webhook_active:
+        # Start polling in the background
+        await ptb_app.updater.start_polling(drop_pending_updates=True)
     
     yield  # Let FastAPI run and process HTTP requests
     
     # Shutdown PTB when FastAPI shuts down
     if ptb_app:
         logger.info("Shutting down Telegram bot...")
-        if WEBHOOK_URL:
+        try:
+            if ptb_app.updater and ptb_app.updater.running:
+                await ptb_app.updater.stop()
             await ptb_app.bot.delete_webhook()
+        except Exception:
+            pass
         await ptb_app.stop()
         await ptb_app.shutdown()
 
