@@ -13,10 +13,19 @@ from datetime import datetime
 import config
 from llm_router import LLMRouter
 import memory
+import sandbox
+import mcp_client
 
 logger = logging.getLogger("brain")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CODE_BLOCK_REGEX = re.compile(r'```(?:python)?\n(.+?)```', re.DOTALL)
+
+CODE_KEYWORDS = [
+    "executa", "execute", "roda esse código", "roda isso",
+    "testa esse código", "run this", "eval",
+]
+
 # Intent Detection — Keywords (fast, no LLM call)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -50,6 +59,15 @@ URL_REGEX = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
 def classify_intent(text: str) -> tuple[str, str | None]:
     """Fast keyword-based intent classification."""
     text_lower = text.lower().strip()
+
+    # Code block detected → sandbox execution
+    code_match = CODE_BLOCK_REGEX.search(text)
+    if code_match:
+        return ("execute_code", code_match.group(1).strip())
+
+    for kw in CODE_KEYWORDS:
+        if kw in text_lower:
+            return ("execute_code", text)
 
     urls = URL_REGEX.findall(text)
     if urls:
@@ -160,6 +178,37 @@ async def process(text: str, chat_id: int) -> str:
             response = f"🧠 **Tudo que sei sobre você:**\n\n{facts_text}"
         else:
             response = "🧠 Ainda não tenho fatos permanentes salvos sobre você."
+        await memory.save_message(chat_id, "assistant", response)
+        return response
+
+    # 3b. Handle code execution via Docker sandbox
+    if intent == "execute_code" and extra:
+        logger.info(f"🐳 Executing code in sandbox...")
+        output = await sandbox.execute_python(extra)
+        response = f"🐳 **Resultado da execução:**\n```\n{output}\n```"
+        await memory.save_message(chat_id, "assistant", response)
+        return response
+
+    # 3c. Handle URL reading via aiohttp
+    if intent == "url_read" and extra:
+        logger.info(f"🌐 Fetching URL: {extra}")
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(extra, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    content = await resp.text()
+            if len(content) > 8000:
+                content = content[:8000] + "\n[... truncado]"
+            messages = [
+                {"role": "system", "content": build_system_prompt()},
+                {"role": "user", "content": f"O usuário enviou esta URL: {extra}\n\nConteúdo da página:\n{content}\n\nMensagem original: {text}"}
+            ]
+            r = get_router()
+            response = await r.generate(messages=messages, task_type="chat", temperature=0.5)
+            response = response or "Não consegui processar o conteúdo."
+        except Exception as e:
+            logger.warning(f"⚠️ URL fetch failed: {e}")
+            response = f"⚠️ Não consegui acessar essa URL: {e}"
         await memory.save_message(chat_id, "assistant", response)
         return response
 
