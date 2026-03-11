@@ -179,56 +179,49 @@ async def search_episodes(query: str, limit: int = 3) -> list[str]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Core Memory (Postgres) — Permanent facts
+# Core Memory (Postgres) — Permanent facts (connection pool)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async def _pg_execute(query: str, *args):
-    """Execute a query against Postgres using asyncpg."""
-    import asyncpg
-    conn = await asyncpg.connect(config.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"))
-    try:
-        return await conn.fetch(query, *args)
-    finally:
-        await conn.close()
+import asyncpg
+
+_pg_pool: asyncpg.Pool | None = None
 
 
-async def _pg_execute_one(query: str, *args):
-    """Execute and return a single value."""
-    import asyncpg
-    conn = await asyncpg.connect(config.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"))
-    try:
-        return await conn.fetchval(query, *args)
-    finally:
-        await conn.close()
+def _pg_dsn() -> str:
+    return config.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
 
 
 async def init_postgres():
-    """Create the core_memory table if it doesn't exist."""
-    import asyncpg
-    conn = await asyncpg.connect(config.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"))
+    """Create connection pool and core_memory table."""
+    global _pg_pool
     try:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS core_memory (
-                id SERIAL PRIMARY KEY,
-                category TEXT NOT NULL,
-                content TEXT NOT NULL UNIQUE,
-                confidence REAL DEFAULT 1.0,
-                created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        logger.info("✅ Postgres core_memory table ready")
+        _pg_pool = await asyncpg.create_pool(
+            _pg_dsn(),
+            min_size=2,
+            max_size=10,
+        )
+        async with _pg_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS core_memory (
+                    id SERIAL PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    content TEXT NOT NULL UNIQUE,
+                    confidence REAL DEFAULT 1.0,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        logger.info("✅ Postgres core_memory table ready (pool: 2-10 connections)")
     except Exception as e:
         logger.warning(f"⚠️ Postgres init failed: {e}")
-    finally:
-        await conn.close()
 
 
 async def save_core_fact(category: str, content: str, confidence: float = 1.0):
     """Save a permanent fact to Postgres core memory."""
-    import asyncpg
-    conn = await asyncpg.connect(config.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"))
-    try:
+    if not _pg_pool:
+        logger.warning("⚠️ Postgres pool not initialized")
+        return
+    async with _pg_pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO core_memory (category, content, confidence, updated_at)
             VALUES ($1, $2, $3, NOW())
@@ -237,14 +230,16 @@ async def save_core_fact(category: str, content: str, confidence: float = 1.0):
                 updated_at = NOW()
         """, category, content, confidence)
         logger.info(f"💾 Core fact saved: [{category}] {content[:60]}")
-    finally:
-        await conn.close()
 
 
 async def get_core_facts(limit: int = 10) -> list[dict]:
     """Retrieve permanent facts from Postgres."""
-    rows = await _pg_execute(
-        "SELECT category, content, confidence FROM core_memory ORDER BY confidence DESC, updated_at DESC LIMIT $1",
-        limit,
-    )
+    if not _pg_pool:
+        return []
+    async with _pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT category, content, confidence FROM core_memory ORDER BY confidence DESC, updated_at DESC LIMIT $1",
+            limit,
+        )
     return [{"category": r["category"], "content": r["content"], "confidence": r["confidence"]} for r in rows]
+

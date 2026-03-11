@@ -264,7 +264,14 @@ async def process(text: str, chat_id: int) -> str:
         logger.error(f"❌ Brain error: {e}", exc_info=True)
         response = f"❌ Erro interno: {str(e)[:200]}"
 
-    # 7. Save assistant response
+    # 7. Save assistant response + episodic memory
     await memory.save_message(chat_id, "assistant", response)
+
+    # Feed episodic memory (Qdrant) with summary
+    try:
+        episode_summary = f"Usuário: {text[:200]}\nIARA: {response[:300]}"
+        await memory.save_episode(episode_summary, chat_id)
+    except Exception as e:
+        logger.warning(f"⚠️ Episodic save failed: {e}")
 
     return response

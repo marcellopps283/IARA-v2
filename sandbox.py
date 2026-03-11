@@ -29,7 +29,7 @@ async def execute_python(code: str) -> str:
             "--rm",                          # Auto-remove when done
             "--name", container_name,
             "--network", "none",             # No network (security)
-            "--memory", "256m",              # Max 256MB RAM
+            "--memory", "512m",              # Max 512MB RAM
             "--cpus", "0.5",                 # Max half a CPU
             "--read-only",                   # Read-only filesystem
             "--tmpfs", "/tmp:size=64m",      # Temp writable space

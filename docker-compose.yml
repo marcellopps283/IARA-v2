@@ -22,6 +22,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
   # ── Redis (Cache L2 + PubSub + Fila de Rate Limit) ────
   redis:
@@ -49,6 +53,10 @@ services:
       - "127.0.0.1:6334:6334"   # gRPC
     environment:
       QDRANT__SERVICE__GRPC_PORT: 6334
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
   # ── Infinity TEI (Embeddings Locais — Gratuito) ────────
   infinity:

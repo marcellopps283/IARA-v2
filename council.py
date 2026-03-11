@@ -58,12 +58,17 @@ Responda em português brasileiro."""
 async def debate(topic: str, context: str = "") -> str:
     """
     Run a full council debate on a topic.
-    Returns the synthesized result.
+    Layer 1: Blue + Red run in PARALLEL (MoA pattern).
+    Layer 2: Synthesis merges both outputs.
+    Each call has a 45-second timeout.
     """
+    import asyncio
     router = _get_router()
     logger.info(f"⚖️ Council debate started: {topic[:60]}...")
 
-    # Round 1: Blue Team proposes
+    LLM_TIMEOUT = 45  # seconds per LLM call
+
+    # Build messages for both teams
     blue_messages = [
         {"role": "system", "content": BLUE_TEAM_PROMPT},
     ]
@@ -71,36 +76,55 @@ async def debate(topic: str, context: str = "") -> str:
         blue_messages.append({"role": "system", "content": f"[CONTEXTO]\n{context}"})
     blue_messages.append({"role": "user", "content": f"Proponha uma solução para: {topic}"})
 
-    try:
-        blue_response = await router.generate(
-            messages=blue_messages,
-            task_type="reasoning",
-            temperature=0.6,
-        )
-        logger.info(f"🔵 Blue Team responded ({len(blue_response or '')} chars)")
-    except Exception as e:
-        logger.error(f"❌ Blue Team failed: {e}")
-        return f"❌ O Council falhou na fase Blue Team: {e}"
-
-    # Round 2: Red Team critiques
     red_messages = [
         {"role": "system", "content": RED_TEAM_PROMPT},
-        {"role": "user", "content": f"Analise criticamente esta proposta:\n\n{blue_response}\n\nPergunta original: {topic}"},
+        {"role": "user", "content": f"Analise criticamente este tema e encontre falhas em possíveis soluções:\n\n{topic}"},
     ]
 
-    try:
-        red_response = await router.generate(
-            messages=red_messages,
-            task_type="reasoning",
-            temperature=0.7,
+    # Layer 1: Blue + Red in parallel (MoA)
+    async def _blue():
+        return await asyncio.wait_for(
+            router.generate(messages=blue_messages, task_type="reasoning", temperature=0.6),
+            timeout=LLM_TIMEOUT,
         )
-        logger.info(f"🔴 Red Team responded ({len(red_response or '')} chars)")
-    except Exception as e:
-        logger.error(f"❌ Red Team failed: {e}")
-        # If Red Team fails, return only Blue Team's response
-        return f"🔵 **Blue Team (sem revisão):**\n\n{blue_response}"
 
-    # Round 3: Synthesis
+    async def _red():
+        return await asyncio.wait_for(
+            router.generate(messages=red_messages, task_type="reasoning", temperature=0.7),
+            timeout=LLM_TIMEOUT,
+        )
+
+    blue_response, red_response = None, None
+    try:
+        results = await asyncio.gather(_blue(), _red(), return_exceptions=True)
+
+        if isinstance(results[0], Exception):
+            logger.error(f"❌ Blue Team failed: {results[0]}")
+            blue_response = None
+        else:
+            blue_response = results[0]
+            logger.info(f"🔵 Blue Team responded ({len(blue_response or '')} chars)")
+
+        if isinstance(results[1], Exception):
+            logger.error(f"❌ Red Team failed: {results[1]}")
+            red_response = None
+        else:
+            red_response = results[1]
+            logger.info(f"🔴 Red Team responded ({len(red_response or '')} chars)")
+
+    except Exception as e:
+        logger.error(f"❌ Council Layer 1 failed: {e}")
+        return f"❌ O Council falhou: {e}"
+
+    # Fallbacks if one team failed
+    if not blue_response and not red_response:
+        return "❌ Ambos os times falharam. Tente novamente."
+    if not blue_response:
+        return f"🔴 **Red Team (sem proposta Blue):**\n\n{red_response}"
+    if not red_response:
+        return f"🔵 **Blue Team (sem revisão Red):**\n\n{blue_response}"
+
+    # Layer 2: Synthesis
     synthesis_messages = [
         {"role": "system", "content": SYNTHESIS_PROMPT},
         {"role": "user", "content": f"""Pergunta original: {topic}
@@ -115,13 +139,15 @@ Sintetize a melhor resposta combinando ambas as perspectivas."""},
     ]
 
     try:
-        synthesis = await router.generate(
-            messages=synthesis_messages,
-            task_type="reasoning",
-            temperature=0.5,
+        synthesis = await asyncio.wait_for(
+            router.generate(messages=synthesis_messages, task_type="reasoning", temperature=0.5),
+            timeout=LLM_TIMEOUT,
         )
         logger.info(f"⚖️ Synthesis complete ({len(synthesis or '')} chars)")
         return synthesis or "..."
+    except asyncio.TimeoutError:
+        logger.error("❌ Synthesis timed out")
+        return f"🔵 **Blue Team:**\n{blue_response}\n\n🔴 **Red Team:**\n{red_response}\n\n⚠️ Síntese expirou (timeout {LLM_TIMEOUT}s)."
     except Exception as e:
         logger.error(f"❌ Synthesis failed: {e}")
         return f"🔵 **Blue Team:**\n{blue_response}\n\n🔴 **Red Team:**\n{red_response}\n\n⚠️ Síntese automática falhou."
