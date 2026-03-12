@@ -158,12 +158,30 @@ async def tools_node(state: IaraState) -> dict:
     text = state["text"]
     response = None
 
-    # ── Sandbox (code execution) ──
+    # ── Sandbox (code execution via REDCODER) ──
     if intent == "tools_executor__sandbox":
-        code = _extract_code(text) or text
-        logger.info("🐳 Executing code in sandbox...")
-        output = await sandbox.execute_python(code)
-        response = f"🐳 **Resultado da execução:**\n```\n{output}\n```"
+        code_snippet = _extract_code(text)
+        logger.info("🐳 Invoking REDCODER loop...")
+        
+        # O REDCODER agora cuida da geração (Blue Team) e correção (Red Team)
+        result = await sandbox.redcoder_loop(goal=text, initial_code=code_snippet or "")
+        
+        stdout = result.get("stdout", "")
+        stderr = result.get("stderr", "")
+        iters = result.get("iterations", 1)
+        
+        if result.get("exit_code") == 0:
+            response = (
+                f"✅ **REDCODER (gVisor 2026)**\n\n"
+                f"**Output:**\n```\n{stdout}\n```\n\n"
+                f"*Resolvido em {iters} iteração(ões) com isolamento total.*"
+            )
+        else:
+            response = (
+                f"❌ **Falha de Execução (REDCODER):**\n"
+                f"```\n{stderr}\n```\n\n"
+                f"*O sistema tentou {iters} correções sem sucesso.*"
+            )
 
     # ── URL reading ──
     elif intent == "tools_executor__url_read":
