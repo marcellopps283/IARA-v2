@@ -6,6 +6,7 @@ and LightRAG (for background knowledge graphs).
 
 import os
 import logging
+import asyncio
 from mem0 import Memory
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
@@ -20,6 +21,7 @@ logger = logging.getLogger("memory_manager")
 # Mem0 Configuration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _mem0_instance = None
+_mem0_lock = asyncio.Lock()
 
 def get_mem0() -> Memory:
     """Lazy initialization of Mem0 instance."""
@@ -97,8 +99,8 @@ async def custom_llm_func(prompt: str, system_prompt: str | None = None, **kwarg
     )
     return response if isinstance(response, str) else str(response)
 
-def get_lightrag() -> LightRAG:
-    """Lazy initialization of LightRAG instance."""
+async def get_lightrag() -> LightRAG:
+    """Lazy initialization of LightRAG instance with storage check."""
     global _lightrag_instance
     if _lightrag_instance is None:
         working_dir = "./lightrag_data"
@@ -114,7 +116,9 @@ def get_lightrag() -> LightRAG:
                 func=tei_embedding_func
             )
         )
-        logger.info("🕸️ LightRAG initialized (Graph Knowledge)")
+        # Call initialize_storages only once during first get
+        await _lightrag_instance.initialize_storages()
+        logger.info("🕸️ LightRAG initialized and storages ready")
     return _lightrag_instance
 
 
@@ -125,9 +129,6 @@ def get_lightrag() -> LightRAG:
 async def add_core_memory(text: str, user_id: str = "creator", agent_id: str | None = None):
     """Adds a fact to Mem0, resolving contradictions automatically."""
     mem0 = get_mem0()
-    # Mem0 handles the synchronous add under the hood? It exposes .add()
-    # We run it in a thread if it's strictly synchronous
-    import asyncio
     metadata = {}
     if agent_id:
         metadata["agent"] = agent_id
@@ -135,13 +136,13 @@ async def add_core_memory(text: str, user_id: str = "creator", agent_id: str | N
     def _add():
         return mem0.add(text, user_id=user_id, metadata=metadata)
         
-    return await asyncio.to_thread(_add)
+    async with _mem0_lock:
+        return await asyncio.to_thread(_add)
 
 
 async def search_core_memory(query: str, user_id: str = "creator", limit: int = 5) -> str:
     """Searches Mem0 for relevant facts regarding the user."""
     mem0 = get_mem0()
-    import asyncio
     
     def _search():
         results = mem0.search(query=query, user_id=user_id, limit=limit)
@@ -156,18 +157,14 @@ async def search_core_memory(query: str, user_id: str = "creator", limit: int = 
                 formatted_results.append(f"- {str(r)}")
         return "\n".join(formatted_results)
         
-    return await asyncio.to_thread(_search)
+    async with _mem0_lock:
+        return await asyncio.to_thread(_search)
 
 
 async def ingest_knowledge_graph(text: str):
     """Ingests deep research or large texts into LightRAG Knowledge Graph."""
-    rag = get_lightrag()
-    import asyncio
-    # Must initialize storages internally prior to data persistence in LightRAG 1.0+
-    await rag.initialize_storages()
-    
-    # LightRAG .insert() might be async if llm_model_func is async.
-    # We will await it.
+    rag = await get_lightrag()
+    # initialize_storages() is now handled within get_lightrag()
     await rag.ainsert(text)
 
 
@@ -176,8 +173,7 @@ async def search_knowledge_graph(query: str, mode: str = "hybrid") -> str:
     Searches LightRAG graph.
     mode can be 'local' (vector), 'global' (graph), or 'hybrid' (both).
     """
-    rag = get_lightrag()
-    await rag.initialize_storages()
+    rag = await get_lightrag()
     # aquery is async
     response = await rag.aquery(query, param=QueryParam(mode=mode))
     return response

@@ -1,21 +1,14 @@
 """
-memory.py — 3-Layer Semantic Memory for IARA
+memory.py — 2-Layer Semantic Memory for IARA
     Working Memory:  Redis (conversation context, fast, auto-TTL)
-    Episodic Memory: Qdrant (conversation summaries, semantic search via embeddings)
-    Core Memory:     Postgres (permanent facts, preferences, rules)
+    Cognitive Memory: Managed via memory_manager (Mem0 + LightRAG)
 """
 
 import json
 import logging
 from datetime import datetime
 
-import aiohttp
 import redis.asyncio as aioredis
-from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import (
-    Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
-)
-
 import config
 import memory_manager
 
@@ -26,10 +19,7 @@ logger = logging.getLogger("memory")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _redis: aioredis.Redis | None = None
-_qdrant: AsyncQdrantClient | None = None
 
-QDRANT_COLLECTION = "episodic_memory"
-EMBEDDING_DIM = 1024  # intfloat/multilingual-e5-large dimension
 WORKING_MEMORY_TTL = 3600 * 6  # 6 hours
 MAX_CONVERSATION_MESSAGES = 20
 
@@ -41,31 +31,8 @@ def get_redis() -> aioredis.Redis:
     return _redis
 
 
-def get_qdrant() -> AsyncQdrantClient:
-    global _qdrant
-    if _qdrant is None:
-        _qdrant = AsyncQdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
-    return _qdrant
-
-
 async def init():
     """Initialize memory backends. Call once at startup."""
-    # Ensure Qdrant collection exists
-    qdrant = get_qdrant()
-    try:
-        collections = await qdrant.get_collections()
-        names = [c.name for c in collections.collections]
-        if QDRANT_COLLECTION not in names:
-            await qdrant.create_collection(
-                collection_name=QDRANT_COLLECTION,
-                vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
-            )
-            logger.info(f"✅ Qdrant collection '{QDRANT_COLLECTION}' created (dim={EMBEDDING_DIM})")
-        else:
-            logger.info(f"✅ Qdrant collection '{QDRANT_COLLECTION}' exists")
-    except Exception as e:
-        logger.warning(f"⚠️ Qdrant init failed: {e}")
-
     # Test Redis
     try:
         r = get_redis()
@@ -74,31 +41,7 @@ async def init():
     except Exception as e:
         logger.warning(f"⚠️ Redis init failed: {e}")
 
-    logger.info("🧠 Memory stack initialized (Redis + Qdrant)")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Embeddings via Infinity TEI
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-async def embed(text: str) -> list[float] | None:
-    """Generate embedding using the local Infinity TEI server."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{config.TEI_URL}/embeddings",
-                json={"input": text, "model": config.TEI_MODEL},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["data"][0]["embedding"]
-                else:
-                    logger.warning(f"⚠️ Infinity TEI returned {resp.status}")
-                    return None
-    except Exception as e:
-        logger.warning(f"⚠️ Embedding failed: {e}")
-        return None
+    logger.info("🧠 Memory stack initialized (Redis)")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -135,7 +78,7 @@ async def get_conversation(chat_id: int) -> list[dict]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Episodic Memory (Qdrant) — Conversation summaries
+# Episodic Memory — Conversation summaries (Proxy to Mem0)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async def save_episode(summary: str, chat_id: int):
@@ -154,42 +97,8 @@ async def search_episodes(query: str, chat_id: int, limit: int = 3) -> list[str]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Core Memory (Postgres) — Permanent facts (connection pool)
+# Core Memory — Permanent facts (Proxy to Mem0)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-import asyncpg
-
-_pg_pool: asyncpg.Pool | None = None
-
-
-def _pg_dsn() -> str:
-    return config.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
-
-
-async def init_postgres():
-    """Create connection pool and core_memory table."""
-    global _pg_pool
-    try:
-        _pg_pool = await asyncpg.create_pool(
-            _pg_dsn(),
-            min_size=2,
-            max_size=10,
-        )
-        async with _pg_pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS core_memory (
-                    id SERIAL PRIMARY KEY,
-                    category TEXT NOT NULL,
-                    content TEXT NOT NULL UNIQUE,
-                    confidence REAL DEFAULT 1.0,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-        logger.info("✅ Postgres core_memory table ready (pool: 2-10 connections)")
-    except Exception as e:
-        logger.warning(f"⚠️ Postgres init failed: {e}")
-
 
 async def save_core_fact(category: str, content: str, confidence: float = 1.0):
     """Save a permanent fact to Mem0 core memory."""

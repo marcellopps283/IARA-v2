@@ -67,10 +67,9 @@ async def lifespan(app: FastAPI):
     global ptb_app
     logger.info("Starting IARA Core API Lifecycle...")
 
-    # Initialize memory stack (Redis + Qdrant + Postgres)
+    # Initialize memory stack (Redis)
     import memory
     await memory.init()
-    await memory.init_postgres()
     if not TELEGRAM_BOT_TOKEN:
         logger.warning("TELEGRAM_BOT_TOKEN is not set in .env. Bot will not initialize.")
         yield
