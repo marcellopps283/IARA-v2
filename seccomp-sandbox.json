@@ -1,0 +1,9 @@
+{
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "syscalls": [
+    {
+      "names": ["ptrace", "mount", "setuid", "setgid", "chroot", "swapon", "swapoff", "reboot", "kexec_load", "personality", "process_vm_readv", "process_vm_writev"],
+      "action": "SCMP_ACT_ERRNO"
+    }
+  ]
+}
