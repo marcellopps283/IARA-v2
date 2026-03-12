@@ -138,9 +138,12 @@ async def memory_node(state: IaraState) -> dict:
     text = state["text"]
     chat_id = state["chat_id"]
 
-    core_facts = await memory.get_core_facts(limit=5)
-    episodes = await memory.search_episodes(text, chat_id=chat_id, limit=3)
-    conversation = await memory.get_conversation(chat_id)
+    # Load core facts, episodes, and conversation history in parallel
+    core_facts, episodes, conversation = await asyncio.gather(
+        memory.get_core_facts(limit=5),
+        memory.search_episodes(text, chat_id=chat_id, limit=3),
+        memory.get_conversation(chat_id)
+    )
 
     return {
         "core_facts": core_facts or [],

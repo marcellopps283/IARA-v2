@@ -7,14 +7,17 @@ import logging
 import httpx
 from qdrant_client import AsyncQdrantClient
 
+import json
 import config
+import redis.asyncio as aioredis
 
 logger = logging.getLogger("semantic_router")
 
 _qdrant: AsyncQdrantClient | None = None
+_redis: aioredis.Redis | None = None
 COLLECTION_NAME = "routes"
 MIN_SCORE_THRESHOLD = 0.75  # Cosine similarity threshold
-
+EMBEDDING_CACHE_TTL = 86400  # 24 hours
 
 def get_qdrant() -> AsyncQdrantClient:
     global _qdrant
@@ -22,9 +25,26 @@ def get_qdrant() -> AsyncQdrantClient:
         _qdrant = AsyncQdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
     return _qdrant
 
+def get_redis() -> aioredis.Redis:
+    global _redis
+    if _redis is None:
+        _redis = aioredis.from_url(config.REDIS_URL, decode_responses=True)
+    return _redis
+
 
 async def get_embedding(text: str) -> list[float] | None:
-    """Generate embedding using the local Infinity TEI server."""
+    """Generate embedding using the local Infinity TEI server with Redis cache."""
+    # ── Try Redis Cache First ──
+    try:
+        r = get_redis()
+        cache_key = f"iara:emb:{text[:100]}" # Simple key
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception as e:
+        logger.debug(f"Cache miss or error: {e}")
+
+    # ── Generate new embedding ──
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
@@ -33,7 +53,15 @@ async def get_embedding(text: str) -> list[float] | None:
             )
             response.raise_for_status()
             data = response.json()
-            return data["data"][0]["embedding"]
+            vector = data["data"][0]["embedding"]
+            
+            # ── Save to Cache ──
+            try:
+                await r.setex(cache_key, EMBEDDING_CACHE_TTL, json.dumps(vector))
+            except Exception:
+                pass
+                
+            return vector
     except Exception as e:
         logger.warning(f"⚠️ Embedding failed in router: {e}")
         return None

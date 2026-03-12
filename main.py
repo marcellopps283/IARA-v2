@@ -135,6 +135,10 @@ async def lifespan(app: FastAPI):
     # Initialize memory stack (Redis)
     import memory
     await memory.init()
+    
+    # Warm up semantic engines (Embeddings, Mem0, LightRAG)
+    import memory_manager
+    asyncio.create_task(memory_manager.warmup())
     if not TELEGRAM_BOT_TOKEN:
         logger.warning("TELEGRAM_BOT_TOKEN is not set in .env. Bot will not initialize.")
         yield

@@ -107,6 +107,27 @@ async def custom_llm_func(prompt: str, system_prompt: str | None = None, **kwarg
     )
     return response if isinstance(response, str) else str(response)
 
+async def warmup():
+    """Warms up embedding models and databases on startup."""
+    logger.info("🔥 Starting IARA Memory Warmup...")
+    try:
+        # 1. Warm up Embeddings via Semantic Router
+        import semantic_router
+        await semantic_router.get_embedding("warmup")
+        
+        # 2. Warm up Mem0 (and LiteLLM)
+        mem0 = await get_mem0()
+        def _silent_search():
+            return mem0.search("warmup", user_id="creator", limit=1)
+        await asyncio.to_thread(_silent_search)
+        
+        # 3. Warm up LightRAG
+        rag = await get_lightrag()
+        
+        logger.info("✅ All memory engines warmed up and ready.")
+    except Exception as e:
+        logger.warning(f"⚠️ Warmup partially failed: {e}")
+
 async def get_lightrag() -> LightRAG:
     """Lazy initialization of LightRAG instance with storage check."""
     global _lightrag_instance
