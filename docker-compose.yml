@@ -69,8 +69,10 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
-    command: v2 --model-id BAAI/bge-small-en-v1.5 --device cpu
     environment:
+      - INFINITY_MODEL_ID=intfloat/multilingual-e5-large
+      - INFINITY_DEVICE=cpu
+      - INFINITY_ENGINE=torch
       - INFINITY_HOST=0.0.0.0
       - INFINITY_PORT=7997
     volumes:
