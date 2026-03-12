@@ -12,9 +12,10 @@ import logging
 import re
 import asyncio
 from datetime import datetime
-from typing import TypedDict
+from typing import TypedDict, AsyncGenerator, cast, Any
 
 from langgraph.graph import StateGraph, END
+from langgraph.types import Send
 
 import config
 from llm_router import LLMRouter
@@ -40,10 +41,13 @@ class IaraState(TypedDict, total=False):
     intent: str                  # Resolved route name from semantic router
     score: float                 # Semantic similarity score
     response: str                # Final response to user
-    core_facts: list[dict]       # From Postgres (permanent memory)
-    episodes: list[str]          # From Qdrant (episodic memory)
-    conversation: list[dict]     # From Redis (working memory)
+    core_facts: Any              # From Postgres/Mem0 (permanent memory)
+    episodes: Any                # From Qdrant/Mem0 (episodic memory)
+    kg_context: str              # From LightRAG (Knowledge Graph)
+    conversation: Any            # From Redis (working memory)
     task_type: str               # For LLM router prioritization
+    _stream_queue: Any           # Internal: For SSE streaming (SOTA 2026)
+    specialist: str              # For specialist_node routing
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -75,7 +79,11 @@ def _extract_code(text: str) -> str | None:
     return None
 
 
-def build_system_prompt(core_facts: list[dict] | None = None, episodes: list[str] | None = None) -> str:
+def build_system_prompt(
+    core_facts: list[dict] | None = None, 
+    episodes: list[str] | None = None, 
+    kg_context: str | None = None
+) -> str:
     """Build system prompt with identity + memory layers + temporal context."""
     identity = config.load_identity()
 
@@ -97,6 +105,8 @@ def build_system_prompt(core_facts: list[dict] | None = None, episodes: list[str
     if episodes:
         episodes_text = "\n".join(f"- {ep}" for ep in episodes)
         memory_section += f"\n\n[MEMÓRIA EPISÓDICA — Conversas passadas relevantes]\n{episodes_text}"
+    if kg_context and kg_context.strip():
+        memory_section += f"\n\n[GRAFO DE CONHECIMENTO — Contexto profundo]\n{kg_context}"
 
     return f"""{identity}
 
@@ -134,21 +144,36 @@ async def router_node(state: IaraState) -> dict:
 
 
 async def memory_node(state: IaraState) -> dict:
-    """Load memory layers for chat context (core facts + episodes + conversation)."""
+    """
+    Load memory layers in parallel (SOTA 2026 Parallel Fetch).
+    Fetches Core Facts, Episodes, Knowledge Graph and Conversation history.
+    """
+    import memory_manager
     text = state["text"]
     chat_id = state["chat_id"]
 
-    # Load core facts, episodes, and conversation history in parallel
-    core_facts, episodes, conversation = await asyncio.gather(
+    # Parallel Fetch with return_exceptions=True to prevent total failure if one backend is down
+    results = await asyncio.gather(
         memory.get_core_facts(limit=5),
         memory.search_episodes(text, chat_id=chat_id, limit=3),
-        memory.get_conversation(chat_id)
+        memory_manager.search_knowledge_graph(text),
+        memory.get_conversation(chat_id),
+        return_exceptions=True
     )
 
+    core_facts = results[0] if not isinstance(results[0], Exception) else []
+    episodes = results[1] if not isinstance(results[1], Exception) else []
+    kg_context = results[2] if not isinstance(results[2], Exception) else ""
+    conversation = results[3] if not isinstance(results[3], Exception) else []
+
+    if any(isinstance(r, Exception) for r in results):
+        logger.warning(f"⚠️ Some memory backends failed: {[r for r in results if isinstance(r, Exception)]}")
+
     return {
-        "core_facts": core_facts or [],
-        "episodes": episodes or [],
-        "conversation": conversation or [],
+        "core_facts": core_facts,
+        "episodes": episodes,
+        "kg_context": kg_context,
+        "conversation": conversation,
     }
 
 
@@ -242,26 +267,33 @@ async def tools_node(state: IaraState) -> dict:
 async def council_node(state: IaraState) -> dict:
     """Run Council adversarial debate (Blue Team vs Red Team → Synthesis)."""
     text = state["text"]
+    
+    # Council with Streaming support (SOTA 2026)
+    stream_queue = state.get("_stream_queue")
+    if stream_queue:
+        q = cast(Any, stream_queue)
+        await q.put("⚖️ **Iniciando debate no Conselho...**\n\n")
+        response = await council.debate(text, context=str(state.get("conversation", [])))
+        await q.put(response)
+        return {"response": response}
+
     logger.info("⚖️ Invoking Council debate...")
-    response = await council.debate(text)
+    response = await council.debate(text, context=str(state.get("conversation", [])))
     return {"response": response}
 
 
-async def swarm_node(state: IaraState) -> dict:
+async def specialist_node(state: IaraState) -> dict:
     """Dispatch to a Swarm specialist (Coder, Researcher, Planner, Creative)."""
-    intent = state["intent"]
     text = state["text"]
     chat_id = state["chat_id"]
+    specialist = state.get("specialist", "researcher") # Passed via Send
 
-    if intent == "tools_executor__deep_research":
-        specialist = "researcher"
-    else:
-        specialist = intent.replace("swarm__", "")
-    logger.info(f"🐝 Delegating to specialist: {specialist}")
+    logger.info(f"🐝 Specialist Node: {specialist}")
 
     conversation = await memory.get_conversation(chat_id)
-    # Cast to list for slicing to satisfy type checker
-    history_slice = list(conversation)[-6:]
+    # Cast to Any to bypass checker slice indexing issues
+    history = cast(Any, list(conversation) if conversation else [])
+    history_slice = history[-6:]
     context = "\n".join(f"{m['role']}: {m['content']}" for m in history_slice)
     response = await swarm.dispatch(specialist, text, context=context)
 
@@ -282,23 +314,56 @@ async def chat_node(state: IaraState) -> dict:
     system_prompt = build_system_prompt(
         core_facts=state.get("core_facts"),
         episodes=state.get("episodes"),
+        kg_context=state.get("kg_context")
     )
 
     messages = [{"role": "system", "content": system_prompt}]
-    # Add conversation history (already includes the current user message)
-    conversation = state.get("conversation", [])
-    messages.extend(conversation)
+    # Add conversation history
+    conv = state.get("conversation", [])
+    messages.extend(cast(Any, conv))
 
     active_model = await settings_manager.get_active_model()
     
     r = get_router()
     try:
+        # 🎯 Semantic Cache Check (SOTA 2026)
+        stream_queue = state.get("_stream_queue")
+        
+        cached_response = await semantic_router.semantic_cache_get(text)
+        if cached_response:
+            logger.info("🎯 Semantic Cache HIT in Brain")
+            if stream_queue:
+                # Cast for type safety
+                import typing
+                q = typing.cast(asyncio.Queue, stream_queue)
+                await q.put(cached_response)
+            return {"response": cached_response}
+
+        # If streaming is requested, iterate over the stream
+        if stream_queue:
+            import typing
+            q = typing.cast(asyncio.Queue, stream_queue)
+            full_response = ""
+            async for token in r.generate_stream(
+                messages=messages, 
+                task_type=task_type,
+                force_model=active_model
+            ):
+                full_response += token
+                await q.put(token)
+            
+            # Save to cache in background
+            asyncio.create_task(semantic_router.semantic_cache_set(text, full_response))
+            return {"response": full_response}
+
         response = await r.generate(
             messages=messages,
             task_type=task_type,
             temperature=0.7,
             force_model=active_model # Pass the dynamic model
         )
+        if isinstance(response, str) and response.strip():
+            asyncio.create_task(semantic_router.semantic_cache_set(text, response))
         if isinstance(response, dict):
             response = f"[Tool Call] {response}"
         response = response or "..."
@@ -335,25 +400,24 @@ async def formatter_node(state: IaraState) -> dict:
 # Conditional Routing
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-
-async def route_by_intent(state: IaraState) -> str:
-    """Conditional edge: route to the correct node based on semantic intent."""
+async def route_by_intent(state: IaraState) -> str | list[Send]:
+    """Conditional edge: route to the correct node or Send to specialist."""
     intent = str(state.get("intent", "chat_agent"))
-
-    # Dynamic overrides from Dashboard
+    
+    # Dashboard Overrides
     settings = await settings_manager.get_settings()
     reasoning_mode = str(settings.get("reasoning_mode", "planning"))
 
     if intent == "tools_executor__deep_research":
-        return "swarm_node"
-    elif intent.startswith("tools_executor") or intent == "security__blocked":
-        return "tools_node"
+        return [Send("specialist_node", {**state, "specialist": "researcher"})]
+    elif intent.startswith("swarm__"):
+        specialist = intent.replace("swarm__", "")
+        return [Send("specialist_node", {**state, "specialist": specialist})]
     elif intent == "council_debate":
         return "council_node" if reasoning_mode == "planning" else "memory_node"
-    elif intent.startswith("swarm__"):
-        return "swarm_node"
+    elif intent.startswith("tools_executor") or intent == "security__blocked":
+        return "tools_node"
     else:
-        # chat_agent, web_search fallback, deep_research, etc.
         return "memory_node"
 
 
@@ -370,7 +434,7 @@ def build_graph() -> StateGraph:
                                  │                     │
                                  ├─ council_node ──────┤
                                  │                     │
-                                 ├─ swarm_node ────────┤
+                                 ├─ specialist_node ────────┤
                                  │                     │
                                  └─ memory_node → chat_node
     """
@@ -381,7 +445,7 @@ def build_graph() -> StateGraph:
     graph.add_node("memory_node", memory_node)
     graph.add_node("tools_node", tools_node)
     graph.add_node("council_node", council_node)
-    graph.add_node("swarm_node", swarm_node)
+    graph.add_node("specialist_node", specialist_node)
     graph.add_node("chat_node", chat_node)
     graph.add_node("formatter_node", formatter_node)
 
@@ -395,7 +459,7 @@ def build_graph() -> StateGraph:
         {
             "tools_node": "tools_node",
             "council_node": "council_node",
-            "swarm_node": "swarm_node",
+            "specialist_node": "specialist_node",
             "memory_node": "memory_node",
         },
     )
@@ -406,7 +470,7 @@ def build_graph() -> StateGraph:
     # All execution nodes → formatter
     graph.add_edge("tools_node", "formatter_node")
     graph.add_edge("council_node", "formatter_node")
-    graph.add_edge("swarm_node", "formatter_node")
+    graph.add_edge("specialist_node", "formatter_node")
     graph.add_edge("chat_node", "formatter_node")
 
     # Formatter → END
@@ -437,8 +501,10 @@ async def process(text: str, chat_id: int) -> str:
         "response": "",
         "core_facts": [],
         "episodes": [],
+        "kg_context": "",
         "conversation": [],
         "task_type": "chat",
+        "_stream_queue": None,
     }
 
     try:
@@ -447,3 +513,48 @@ async def process(text: str, chat_id: int) -> str:
     except Exception as e:
         logger.error(f"❌ LangGraph pipeline error: {e}", exc_info=True)
         return f"❌ Erro no pipeline: {str(e)[:200]}"
+
+
+async def process_stream(text: str, chat_id: int) -> AsyncGenerator[str, None]:
+    """
+    SOTA 2026 Streaming Entry Point.
+    Returns an AsyncGenerator that yields tokens directly from LLM nodes.
+    """
+    token_queue = asyncio.Queue()
+    
+    initial_state: IaraState = {
+        "text": text,
+        "chat_id": chat_id,
+        "intent": "",
+        "score": 0.0,
+        "response": "",
+        "core_facts": [],
+        "episodes": [],
+        "kg_context": "",
+        "conversation": [],
+        "task_type": "chat",
+        "_stream_queue": token_queue,
+    }
+
+    # Run the graph in a separate task
+    async def run_graph():
+        try:
+            await _compiled_graph.ainvoke(initial_state)
+        except Exception as e:
+            logger.error(f"❌ Streaming Graph failed: {e}")
+            await token_queue.put(f"\n\n❌ [ERRO]: {str(e)}")
+        finally:
+            # Sentinel value to signal end of stream
+            if token_queue:
+                await token_queue.put(None)
+
+    graph_task = asyncio.create_task(run_graph())
+
+    # Yield tokens as they arrive
+    while True:
+        token = await token_queue.get()
+        if token is None:
+            break
+        yield token
+
+    await graph_task

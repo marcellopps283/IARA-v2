@@ -5,7 +5,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -136,9 +136,27 @@ async def lifespan(app: FastAPI):
     import memory
     await memory.init()
     
-    # Warm up semantic engines (Embeddings, Mem0, LightRAG)
-    import memory_manager
-    asyncio.create_task(memory_manager.warmup())
+    # 🚀 Warm up semantic engines (Embeddings, Mem0, LightRAG) - SOTA 2026
+    logger.info("🔥 Phase 12: Starting Warmup Blitz...")
+    try:
+        # Pre-warm embeddings
+        import semantic_router
+        await semantic_router.get_embedding("warmup query for latency")
+        
+        # Pre-warm LLM connection pools (Groq/Cerebras)
+        router = brain.get_router()
+        await asyncio.gather(
+            router.generate([{"role": "user", "content": "hi"}], task_type="chat_fast"),
+            return_exceptions=True
+        )
+        
+        # Pre-connect Redis
+        r = memory.get_redis()
+        await r.ping()
+        
+        logger.info("✅ Warmup complete. Systems primed.")
+    except Exception as e:
+        logger.warning(f"⚠️ Warmup blitz failed: {e}")
     if not TELEGRAM_BOT_TOKEN:
         logger.warning("TELEGRAM_BOT_TOKEN is not set in .env. Bot will not initialize.")
         yield
@@ -231,9 +249,43 @@ else:
     logger.warning(f"⚠️ Dashboard dist folder not found at {DASHBOARD_PATH}. Frontend will not be served.")
 
 async def verify_api_key(request: Request):
-    api_key = request.headers.get("X-API-Key")
+    api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
     if api_key != DASHBOARD_API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SSE Streaming Endpoint (SOTA 2026)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def token_stream_generator(text: str, chat_id: int):
+    """Generates SSE formatted tokens from the brain stream."""
+    try:
+        async for token in brain.process_stream(text, chat_id):
+            # Clean for SSE formatting
+            yield f"data: {json.dumps({'token': token})}\n\n"
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        logger.error(f"❌ SSE Generator error: {e}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+@app.get("/api/chat/stream")
+async def chat_stream(text: str, chat_id: int = 0, api_key: str = None):
+    """
+    Streaming chat endpoint for web/dashboard.
+    Returns a text/event-stream.
+    """
+    if api_key != DASHBOARD_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+        
+    return StreamingResponse(
+        token_stream_generator(text, chat_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable Nginx buffering
+            "Connection": "keep-alive",
+        }
+    )
 
 @app.get("/health")
 async def health_check():

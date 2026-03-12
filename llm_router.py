@@ -4,15 +4,14 @@ Usa aiohttp com a API REST compatível com OpenAI (sem SDK compilado).
 Compatível com Termux/Android (sem jiter/C extensions).
 """
 
-import asyncio
-import json
-import logging
 import random
-from typing import AsyncGenerator
+import json
+import asyncio
+import datetime
+import logging
+from typing import AsyncGenerator, Any
 
 import aiohttp
-import datetime
-
 import config
 import hooks
 
@@ -183,28 +182,28 @@ class LLMRouter:
                 url = f"{provider['base_url']}/chat/completions"
                 timeout = aiohttp.ClientTimeout(total=config.LLM_TIMEOUT_SECONDS)
 
-                max_retries = 2
-                for attempt in range(max_retries):
+                start_time = datetime.datetime.now()
+                for attempt in range(max_retries := 2):
                     async with _api_semaphore:
                         async with aiohttp.ClientSession(timeout=timeout) as session:
                             async with session.post(url, headers=headers, json=body) as resp:
                                 if resp.status == 429:
                                     wait_time = (2 ** attempt) + random.uniform(0.1, 1.5)
-                                    logger.warning(f"⚠️ {provider['name']}: Rate limit (429). Retry {attempt+1}/{max_retries} in {wait_time:.1f}s")
-                                    if attempt < max_retries - 1:
+                                    logger.warning(f"⚠️ {provider['name']}: Rate limit (429). Retry {attempt+1}/2 in {wait_time:.1f}s")
+                                    if attempt < 1:
                                         await asyncio.sleep(wait_time)
                                         continue
                                     else:
-                                        break # Vai pro fallback (próximo provider)
+                                        break
                                         
                                 if resp.status != 200:
                                     raw_err = await resp.text()
-                                    error_text = str(raw_err)
-                                    abbr_err = error_text[:200] if len(error_text) > 200 else error_text
-                                    logger.warning(f"⚠️ {provider['name']}: HTTP {resp.status} - {abbr_err}")
-                                    break # Erros normais não dão retry, fazemos fallback
+                                    logger.warning(f"⚠️ {provider['name']}: HTTP {resp.status} - {raw_err[:200]}")
+                                    break
 
                                 data = await resp.json()
+                                duration = (datetime.datetime.now() - start_time).total_seconds() * 1000
+                                logger.info(f"⚡ Latência ({provider['name']}): {duration:.1f}ms")
 
                                 choice = data["choices"][0]
                                 message = choice["message"]
@@ -317,7 +316,13 @@ class LLMRouter:
                                     break
 
                                 # Parse SSE stream
+                                first_token_received = False
+                                start_time_stream = datetime.datetime.now()
                                 async for line in resp.content:
+                                    if not first_token_received:
+                                        ttft = (datetime.datetime.now() - start_time_stream).total_seconds() * 1000
+                                        logger.info(f"⚡ TTFT ({provider['name']}): {ttft:.1f}ms")
+                                        first_token_received = True
                                     line = line.decode("utf-8").strip()
                                     if not line or not line.startswith("data: "):
                                         continue
