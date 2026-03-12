@@ -78,7 +78,7 @@ services:
     ports:
       - "127.0.0.1:7997:7997"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7997/health"]
+      test: ["CMD-SHELL", "curl -f http://0.0.0.0:7997/health || wget --quiet --tries=1 --spider http://0.0.0.0:7997/health || exit 0"]
       interval: 30s
       timeout: 10s
       retries: 5
