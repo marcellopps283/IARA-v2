@@ -70,7 +70,7 @@ services:
       qdrant:
         condition: service_started
     environment:
-      - INFINITY_MODEL_ID=intfloat/multilingual-e5-large
+      - INFINITY_MODEL_ID=sentence-transformers/all-MiniLM-L6-v2
       - INFINITY_DEVICE=cpu
       - INFINITY_ENGINE=torch
       - INFINITY_HOST=0.0.0.0
