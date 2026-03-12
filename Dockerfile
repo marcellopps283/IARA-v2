@@ -1,5 +1,15 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# IARA Core — Dockerfile (Python 3.12)
+# Stage 1: Build Dashboard Frontend (React + Vite)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FROM node:20-slim AS frontend-builder
+WORKDIR /app/dashboard
+COPY dashboard/package*.json ./
+RUN npm install
+COPY dashboard/ .
+RUN npm run build
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stage 2: IARA Core (Python 3.12)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FROM python:3.12-slim
 
@@ -19,6 +29,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia o código fonte
 COPY . .
+
+# Copia o dashboard compilado do estágio anterior
+COPY --from=frontend-builder /app/dashboard/dist ./dashboard/dist
 
 # Inicializa o repositório Git para versionamento de SOPs
 RUN git config --global user.email "iara@zeroclaw.local" && \

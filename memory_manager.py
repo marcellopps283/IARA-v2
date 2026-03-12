@@ -14,6 +14,7 @@ import functools
 import numpy as np
 
 import config
+import settings_manager
 
 logger = logging.getLogger("memory_manager")
 
@@ -23,13 +24,20 @@ logger = logging.getLogger("memory_manager")
 _mem0_instance = None
 _mem0_lock = asyncio.Lock()
 
-def get_mem0() -> Memory:
+async def get_mem0() -> Memory:
     """Lazy initialization of Mem0 instance."""
     global _mem0_instance
     if _mem0_instance is None:
-        groq_cfg = config.LLM_PROVIDERS[0]
+        active_model = await settings_manager.get_active_model()
+        # Find provider for this model or default to Groq
+        provider = "groq"
+        model_name = active_model
+        if "/" in active_model:
+            provider, model_name = active_model.split("/", 1)
         
         # Set environment variables for LiteLLM
+        # (Assuming the api_key is still valid from config or settings)
+        groq_cfg = config.LLM_PROVIDERS[0] # Fallback for keys
         os.environ["GROQ_API_KEY"] = groq_cfg["api_key"]
         os.environ["OPENAI_API_KEY"] = "infinity-api-key"
         os.environ["OPENAI_BASE_URL"] = config.TEI_URL
@@ -46,7 +54,7 @@ def get_mem0() -> Memory:
             "llm": {
                 "provider": "litellm",
                 "config": {
-                    "model": f"groq/{groq_cfg['model']}"
+                    "model": f"{provider}/{model_name}"
                 }
             },
             "embedder": {
@@ -128,7 +136,7 @@ async def get_lightrag() -> LightRAG:
 
 async def add_core_memory(text: str, user_id: str = "creator", agent_id: str | None = None):
     """Adds a fact to Mem0, resolving contradictions automatically."""
-    mem0 = get_mem0()
+    mem0 = await get_mem0()
     metadata = {}
     if agent_id:
         metadata["agent"] = agent_id
@@ -142,7 +150,7 @@ async def add_core_memory(text: str, user_id: str = "creator", agent_id: str | N
 
 async def search_core_memory(query: str, user_id: str = "creator", limit: int = 5) -> str:
     """Searches Mem0 for relevant facts regarding the user."""
-    mem0 = get_mem0()
+    mem0 = await get_mem0()
     
     def _search():
         results = mem0.search(query=query, user_id=user_id, limit=limit)

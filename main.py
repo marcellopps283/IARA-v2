@@ -1,10 +1,13 @@
 import logging
 import os
+import json
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
@@ -24,6 +27,67 @@ ptb_app = None
 
 import brain
 import ops_bot
+import memory_manager
+import memory
+import settings_manager
+from datetime import datetime
+import time
+
+# Uptime tracking
+START_TIME = time.time()
+
+# Dashboard Security
+DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "iara-secret-key")
+
+# WebSocket active connections
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
+
+# Custom Log Handler for WebSockets
+class WebSocketLogHandler(logging.Handler):
+    def __init__(self, manager: ConnectionManager):
+        super().__init__()
+        self.manager = manager
+        self.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+
+    def emit(self, record):
+        if not self.formatter:
+            return
+        log_entry = {
+            "timestamp": self.formatter.formatTime(record, self.formatter.datefmt),
+            "level": record.levelname,
+            "module": record.name,
+            "message": record.getMessage()
+        }
+        # Safely broadcast to WebSockets
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.manager.broadcast(log_entry))
+        except RuntimeError:
+            pass # No running loop
+
+# Add handler to root logger
+ws_handler = WebSocketLogHandler(manager)
+logging.getLogger().addHandler(ws_handler)
 
 async def start_command(update: Update, context):
     await update.message.reply_text(
@@ -49,13 +113,14 @@ async def handle_message(update: Update, context):
         response = await brain.process(user_text, chat_id)
 
         # Edit the placeholder with the real response
-        if len(response) <= 4096:
-            await placeholder.edit_text(response)
+        response_str = str(response)
+        if len(response_str) <= 4096:
+            await placeholder.edit_text(response_str)
         else:
             # First chunk replaces placeholder, rest are new messages
-            await placeholder.edit_text(response[:4096])
-            for i in range(4096, len(response), 4096):
-                await update.message.reply_text(response[i:i+4096])
+            await placeholder.edit_text(response_str[:4096])
+            for i in range(4096, len(response_str), 4096):
+                await update.message.reply_text(response_str[i:i+4096])
 
     except Exception as e:
         logger.error(f"❌ handle_message error: {e}", exc_info=True)
@@ -130,15 +195,217 @@ async def lifespan(app: FastAPI):
 # Create FastAPI App
 app = FastAPI(
     title="IARA Ecosystem",
-    description="ZeroClaw-inspired Core API with Webhook Support",
-    version="1.0.0",
+    description="ZeroClaw-inspired Core API with Dashboard Support",
+    version="1.1.0",
     lifespan=lifespan
 )
+
+# CORS for Lovable/Frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Dashboard Frontend Serving
+DASHBOARD_PATH = os.path.join(os.getcwd(), "dashboard", "dist")
+
+if os.path.exists(DASHBOARD_PATH):
+    # Mount static assets (JS, CSS, images)
+    app.mount("/dashboard", StaticFiles(directory=DASHBOARD_PATH, html=True), name="dashboard")
+
+    # SPA Catch-all: Redirect all /dashboard/* routes to dashboard/index.html
+    @app.get("/dashboard/{full_path:path}")
+    async def serve_dashboard(request: Request, full_path: str):
+        index_path = os.path.join(DASHBOARD_PATH, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return JSONResponse({"error": "Dashboard index.html not found"}, status_code=404)
+else:
+    logger.warning(f"⚠️ Dashboard dist folder not found at {DASHBOARD_PATH}. Frontend will not be served.")
+
+async def verify_api_key(request: Request):
+    api_key = request.headers.get("X-API-Key")
+    if api_key != DASHBOARD_API_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
 @app.get("/health")
 async def health_check():
     """Healthcheck endpoint for Docker Compose."""
-    return {"status": "healthy", "version": "1.0.0"}
+    return {"status": "healthy", "version": "1.1.0"}
+
+@app.get("/status")
+async def get_status(request: Request):
+    await verify_api_key(request)
+    
+    # Check Infrastructure
+    redis_status = "offline"
+    redis_latency = 0
+    try:
+        r = memory.get_redis()
+        start = time.time()
+        await r.ping()
+        redis_latency = int((time.time() - start) * 1000)
+        redis_status = "online"
+    except Exception:
+        pass
+
+    qdrant_status = "offline"
+    collections = []
+    try:
+        from qdrant_client import QdrantClient
+        qc = QdrantClient(host=os.getenv("QDRANT_HOST", "qdrant"), port=6333)
+        cols = qc.get_collections().collections
+        collections = [c.name for c in cols]
+        qdrant_status = "online"
+    except Exception:
+        pass
+
+    infinity_status = "offline"
+    try:
+        import httpx
+        from config import TEI_URL
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{TEI_URL}/health")
+            if resp.status_code == 200:
+                infinity_status = "online"
+    except Exception:
+        pass
+
+    # Uptime
+    uptime_seconds = int(time.time() - START_TIME)
+    days, rem = divmod(uptime_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    uptime_str = f"{days}d {hours}h {minutes}m"
+
+    # Memory Metrics
+    facts_count = 0
+    try:
+        # Get count from Mem0 (heuristic: search all)
+        mem0 = memory_manager.get_mem0()
+        search_res = mem0.search("", limit=1000)
+        facts_count = len(search_res) if search_res else 0
+    except Exception:
+        pass
+
+    return {
+        "system": {
+            "core": {
+                "status": "online", 
+                "uptime": uptime_str,
+                "version": "1.1.0"
+            },
+            "infrastructure": {
+                "redis": {"status": redis_status, "latency_ms": redis_latency},
+                "qdrant": {"status": qdrant_status, "collections": collections},
+                "infinity": {"status": infinity_status, "model": os.getenv("TEI_MODEL", "unknown")}
+            },
+            "agents": {
+                "swarm": {"status": "idle", "active_tasks": 0},
+                "council": {"status": "ready"}
+            },
+            "memory_metrics": {
+                "core_facts_count": facts_count,
+                "graph_nodes": 0 # TODO: Stats from LightRAG
+            }
+        }
+    }
+
+@app.patch("/settings")
+async def update_settings_endpoint(request: Request):
+    await verify_api_key(request)
+    data = await request.json()
+    new_settings = await settings_manager.update_settings(data)
+    return {"status": "success", "updated": new_settings}
+
+@app.get("/memory/explorer")
+async def memory_explorer(request: Request):
+    await verify_api_key(request)
+    
+    # 1. Working Memory (Redis)
+    r = memory.get_redis()
+    keys = await r.keys("iara:conv:*")
+    working_memory = []
+    for k in keys[:10]: # Limit for performance
+        messages = await r.lrange(k, -1, -1) # Last message
+        if messages:
+            try:
+                msg_data = json.loads(messages[0])
+                working_memory.append({
+                    "chat_id": k.split(":")[-1],
+                    "last_message": msg_data.get("content", ""),
+                    "updated_at": msg_data.get("ts", "")
+                })
+            except Exception:
+                continue
+
+    # 2. Cognitive Memory (Mem0)
+    cognitive_memory = []
+    try:
+        mem0 = memory_manager.get_mem0()
+        facts = mem0.search("", limit=20)
+        for f in facts:
+            cognitive_memory.append({
+                "id": f.get("id", "unknown"),
+                "text": f.get("memory", ""),
+                "user_id": f.get("user_id", "creator"),
+                "created_at": f.get("created_at", "")
+            })
+    except Exception:
+        pass
+
+    return {
+        "working_memory": working_memory,
+        "cognitive_memory": cognitive_memory,
+        "knowledge_graph": {
+            "total_nodes": 0,
+            "total_edges": 0,
+            "last_ingestion": "never"
+        }
+    }
+
+@app.post("/memory/working/reset")
+async def reset_working_memory_endpoint(request: Request):
+    await verify_api_key(request)
+    r = memory.get_redis()
+    keys = await r.keys("iara:conv:*")
+    if keys:
+        await r.delete(*keys)
+    logger.info("🧹 Working memory reset via dashboard")
+    return {"status": "success", "message": f"{len(keys)} sessions cleared"}
+
+@app.get("/memory/facts")
+async def list_facts(request: Request):
+    await verify_api_key(request)
+    mem0 = memory_manager.get_mem0()
+    results = mem0.get_all(user_id="creator")
+    return results
+
+@app.delete("/memory/facts/{fact_id}")
+async def delete_fact_endpoint(fact_id: str, request: Request):
+    await verify_api_key(request)
+    mem0 = memory_manager.get_mem0()
+    mem0.delete(fact_id)
+    return {"status": "success"}
+
+@app.websocket("/ws/logs")
+async def websocket_logs(websocket: WebSocket):
+    # API Key check via query param for WS
+    token = websocket.query_params.get("api_key")
+    if token != DASHBOARD_API_KEY:
+        await websocket.close(code=4033)
+        return
+        
+    await manager.connect(websocket)
+    try:
+        while True:
+            # We just need to keep the connection open
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 @app.post("/webhook/bot1")
 async def telegram_webhook(request: Request):

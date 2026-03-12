@@ -10,6 +10,7 @@ The public interface remains: process(text, chat_id) -> str
 
 import logging
 import re
+import asyncio
 from datetime import datetime
 from typing import TypedDict
 
@@ -23,6 +24,7 @@ import mcp_client
 import swarm
 import council
 import semantic_router
+import settings_manager
 
 logger = logging.getLogger("brain")
 
@@ -237,7 +239,9 @@ async def swarm_node(state: IaraState) -> dict:
     logger.info(f"🐝 Delegating to specialist: {specialist}")
 
     conversation = await memory.get_conversation(chat_id)
-    context = "\n".join(f"{m['role']}: {m['content']}" for m in (conversation or [])[-6:])
+    # Cast to list for slicing to satisfy type checker
+    history_slice = list(conversation)[-6:]
+    context = "\n".join(f"{m['role']}: {m['content']}" for m in history_slice)
     response = await swarm.dispatch(specialist, text, context=context)
 
     # Alimentar o Grafo de Conhecimento se for pesquisa profunda
@@ -264,12 +268,15 @@ async def chat_node(state: IaraState) -> dict:
     conversation = state.get("conversation", [])
     messages.extend(conversation)
 
+    active_model = await settings_manager.get_active_model()
+    
     r = get_router()
     try:
         response = await r.generate(
             messages=messages,
             task_type=task_type,
             temperature=0.7,
+            model=active_model # Pass the dynamic model
         )
         if isinstance(response, dict):
             response = f"[Tool Call] {response}"
@@ -308,16 +315,20 @@ async def formatter_node(state: IaraState) -> dict:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def route_by_intent(state: IaraState) -> str:
+async def route_by_intent(state: IaraState) -> str:
     """Conditional edge: route to the correct node based on semantic intent."""
-    intent = state.get("intent", "chat_agent")
+    intent = str(state.get("intent", "chat_agent"))
+
+    # Dynamic overrides from Dashboard
+    settings = await settings_manager.get_settings()
+    reasoning_mode = str(settings.get("reasoning_mode", "planning"))
 
     if intent == "tools_executor__deep_research":
         return "swarm_node"
     elif intent.startswith("tools_executor") or intent == "security__blocked":
         return "tools_node"
     elif intent == "council_debate":
-        return "council_node"
+        return "council_node" if reasoning_mode == "planning" else "memory_node"
     elif intent.startswith("swarm__"):
         return "swarm_node"
     else:
