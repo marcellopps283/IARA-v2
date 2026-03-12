@@ -71,14 +71,13 @@ services:
         condition: service_started
     command: v2
     environment:
-      - INFINITY_MODEL_ID=/app/model
+      - INFINITY_MODEL_ID=intfloat/multilingual-e5-large
       - INFINITY_DEVICE=cpu
-      - INFINITY_ENGINE=optimum
+      - INFINITY_ENGINE=torch
       - INFINITY_HOST=0.0.0.0
       - INFINITY_PORT=7997
     volumes:
       - ./data/infinity_cache:/app/.cache
-      - ./data/infinity_model:/app/model
     ports:
       - "127.0.0.1:7997:7997"
     deploy:
