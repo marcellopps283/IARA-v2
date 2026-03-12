@@ -133,6 +133,7 @@ class LLMRouter:
         task_type: str = "chat",
         require_fast: bool = False,
         force_provider: str | None = None,
+        force_model: str | None = None,
     ) -> str | dict:
         """
         Gera uma resposta usando o provider mais adequado para a tarefa.
@@ -163,7 +164,7 @@ class LLMRouter:
                 self.current_provider = provider["name"]
 
                 body = {
-                    "model": provider["model"],
+                    "model": force_model or provider["model"],
                     "messages": messages,
                     "max_tokens": provider["max_tokens"],
                     "temperature": temperature,
@@ -242,6 +243,7 @@ class LLMRouter:
         task_type: str = "chat",
         require_fast: bool = False,
         force_provider: str | None = None,
+        force_model: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Gera resposta em streaming (token por token via SSE).
@@ -277,7 +279,7 @@ class LLMRouter:
                 self.current_provider = provider["name"]
 
                 body = {
-                    "model": provider["model"],
+                    "model": force_model or provider["model"],
                     "messages": messages,
                     "max_tokens": provider["max_tokens"],
                     "temperature": temperature,

@@ -276,7 +276,7 @@ async def chat_node(state: IaraState) -> dict:
             messages=messages,
             task_type=task_type,
             temperature=0.7,
-            model=active_model # Pass the dynamic model
+            force_model=active_model # Pass the dynamic model
         )
         if isinstance(response, dict):
             response = f"[Tool Call] {response}"
