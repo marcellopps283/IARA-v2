@@ -9,8 +9,11 @@ from asyncio import subprocess
 import logging
 import uuid
 import os
+import re
+from llm_router import LLMRouter
 
 logger = logging.getLogger("sandbox")
+router = LLMRouter()
 
 DOCKER_IMAGE = "python:3.12-slim"
 TIMEOUT_SECONDS = 30
@@ -88,11 +91,98 @@ async def execute_python(code: str) -> dict:
         }
 
 
-async def redcoder_loop(code: str, iterations: int = 3) -> dict:
+def _strip_markdown(text: str) -> str:
+    """Remove ```python and ``` blocks from LLM response."""
+    text = re.sub(r"```python\n?", "", text)
+    text = re.sub(r"```\n?", "", text)
+    return text.strip()
+
+
+async def redcoder_loop(goal: str, initial_code: str = "", iterations: int = 3) -> dict:
     """
     REDCODER Pattern: Blue Team (Builder) -> Execute -> Red Team (Destroyer) -> Refine.
-    Currently a placeholder for the iterative loop logic.
     """
-    # TODO: Implement full REDCODER loop with LLM calls
-    result = await execute_python(code)
+    current_code = initial_code or ""
+    history = []
+    
+    # Se não temos código inicial, o Blue Team gera
+    if not current_code:
+        logger.info("🔵 Blue Team gerando código inicial...")
+        current_code = await router.generate(
+            messages=[
+                {"role": "system", "content": "Você é o Blue Team (Builder). Escreva APENAS o código Python puro para resolver o problema. Sem markdown, sem explicações."},
+                {"role": "user", "content": f"Objetivo: {goal}"}
+            ],
+            task_type="code"
+        )
+        current_code = _strip_markdown(current_code)
+
+    for i in range(iterations):
+        logger.info(f"🔄 REDCODER ieração {i+1}/{iterations}...")
+        
+        # 1. Execução
+        result = await execute_python(current_code)
+        stdout, stderr, exit_code = result["stdout"], result["stderr"], result["exit_code"]
+        
+        # 2. Red Team Analysis (Destroyer)
+        if exit_code != 0 or "Error" in stderr:
+            logger.warning(f"🔴 Red Team analisando falha (Exit {exit_code})...")
+            red_feedback = await router.generate(
+                messages=[
+                    {"role": "system", "content": "Você é o Red Team (QA/Destroyer). Analise o erro e dê instruções curtas de correção."},
+                    {"role": "user", "content": f"Código:\n{current_code}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"}
+                ],
+                task_type="fast",
+                force_provider="groq",
+                force_model="llama-3.1-8b-instant" # Forçando modelo rápido e eficiente para debug
+            )
+            
+            if "PASS" in red_feedback.upper()[:10]:
+                logger.info("🟢 Red Team deu PASS inesperado, mas vamos aceitar.")
+                result["iterations"] = i + 1
+                return result
+
+            # 3. Blue Team Refactor (Builder)
+            logger.info("🔵 Blue Team refatorando código...")
+            current_code = await router.generate(
+                messages=[
+                    {"role": "system", "content": "Você é o Blue Team (Builder). Corrija o código baseado no feedback do Red Team. Retorne APENAS o código puro."},
+                    {"role": "user", "content": f"Objetivo: {goal}\n\nCódigo Atual:\n{current_code}\n\nFeedback Red Team:\n{red_feedback}"}
+                ],
+                task_type="code"
+            )
+            current_code = _strip_markdown(current_code)
+            history.append({"iteration": i+1, "feedback": red_feedback, "fixed_code": current_code})
+        else:
+            # Sucesso aparente, mas vamos pedir um "double check" do Red Team se for a primeira vez
+            logger.info("🟢 Execução com sucesso. Red Team validando lógica...")
+            red_check = await router.generate(
+                messages=[
+                    {"role": "system", "content": "Você é o Red Team. Se o código estiver perfeito para o objetivo, responda 'PASS'. Caso contrário, aponte a falha lógica."},
+                    {"role": "user", "content": f"Objetivo: {goal}\n\nCódigo:\n{current_code}\n\nSaída:\n{stdout}"}
+                ],
+                task_type="fast",
+                force_provider="groq",
+                force_model="llama-3.1-8b-instant"
+            )
+            
+            if "PASS" in red_check.upper()[:10]:
+                logger.info("🏆 REDCODER: Código validado!")
+                result["iterations"] = i + 1
+                return result
+            else:
+                logger.warning(f"🔴 Red Team encontrou falha lógica: {red_check[:100]}...")
+                # Repete o loop com o feedback lógico
+                current_code = await router.generate(
+                    messages=[
+                        {"role": "system", "content": "Você é o Blue Team. Refatore o código baseado na falha lógica apontada. Retorne APENAS o código puro."},
+                        {"role": "user", "content": f"Objetivo: {goal}\n\nCódigo Atual:\n{current_code}\n\nFeedback Lógico:\n{red_check}"}
+                    ],
+                    task_type="code"
+                )
+                current_code = _strip_markdown(current_code)
+
+    # Se atingiu o limite, retorna o último resultado
+    result["iterations"] = iterations
+    result["final_code"] = current_code
     return result
