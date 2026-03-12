@@ -40,15 +40,18 @@ async def test_lightrag_graph():
     print(f"\nResposta Global:\n{res_global}")
 
 async def main():
+    import traceback
     try:
         await test_mem0_contradiction()
     except Exception as e:
-        print(f"Erro no teste Mem0: {e}")
+        print(f"Erro no teste Mem0:")
+        traceback.print_exc()
         
     try:
         await test_lightrag_graph()
     except Exception as e:
-        print(f"Erro no teste LightRAG: {e}")
+        print(f"Erro no teste LightRAG:")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     if sys.platform.startswith("win"):
