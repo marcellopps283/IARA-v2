@@ -4,6 +4,7 @@ Loads environment variables and defines LLM provider routing table.
 """
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -30,12 +31,14 @@ TELEGRAM_ALLOWED_CHAT_IDS = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MAX_DAILY_LLM_CALLS = int(os.getenv("MAX_DAILY_LLM_CALLS", "2000"))
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
-DB_PATH = os.getenv("DB_PATH", "iara_memory.db")
+DB_PATH = Path(os.getenv("DB_PATH", "iara_memory.db"))
+MAX_WORKING_MEMORY = 20
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Identity
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SOUL_FILE = os.getenv("SOUL_FILE", "/app/roles/soul.md")
+IDENTITY_DIR = Path("/app/roles/")
+SOUL_FILE = IDENTITY_DIR / "soul.md"
 
 def load_identity() -> str:
     """Load the soul/identity prompt from file, or return a default."""

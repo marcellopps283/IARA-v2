@@ -84,26 +84,6 @@ ROUTE_DEFINITIONS = {
             "o que tem na sua memória sobre mim?",
         ],
     },
-    "tools_executor__weather": {
-        "description": "Consulta de clima e temperatura",
-        "utterances": [
-            "como está o clima?",
-            "vai chover hoje?",
-            "qual a temperatura agora?",
-            "previsão do tempo",
-            "tá frio lá fora?",
-        ],
-    },
-    "tools_executor__reminder": {
-        "description": "Criar lembretes e alarmes",
-        "utterances": [
-            "me lembra daqui a 10 minutos",
-            "me avisa às 18 horas",
-            "cria um lembrete para amanhã",
-            "me acorda às 7 da manhã",
-            "daqui a 1 hora me avisa para sair",
-        ],
-    },
     "tools_executor__sandbox": {
         "description": "Executar código Python em sandbox isolada",
         "utterances": [

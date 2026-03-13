@@ -10,7 +10,6 @@ import asyncio
 from datetime import datetime
 
 import config
-import embeddings
 
 logger = logging.getLogger("core")
 
@@ -55,17 +54,6 @@ async def init_db():
             )
         """)
 
-        # Swarm Jobs (Persistência da fila do Orquestrador contra Crash/Amnésia)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS swarm_jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                role_name TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                result TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
         # Stateful Todo Machine (Phase 1)
         await db.execute("""
@@ -731,130 +719,10 @@ def _weather_code_to_text(code: int) -> str:
 # System Status — Info do dispositivo (Termux)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async def get_system_status() -> str:
-    """Retorna status do sistema via Termux API."""
-    import subprocess
-    import json as json_mod
-    parts = []
-
-    # Bateria
-    try:
-        res = subprocess.run(
-            ["termux-battery-status"], capture_output=True, text=True, timeout=5
-        )
-        if res.returncode == 0:
-            bat = json_mod.loads(res.stdout)
-            parts.append(f"Bateria: {bat.get('percentage', '?')}% ({bat.get('status', '?')})")
-    except Exception:
-        parts.append("Bateria: indisponível (sem Termux API)")
-
-    # Storage
-    try:
-        res = subprocess.run(
-            ["df", "-h", "/data"], capture_output=True, text=True, timeout=5
-        )
-        if res.returncode == 0:
-            lines = res.stdout.strip().split("\n")
-            if len(lines) > 1:
-                cols = lines[1].split()
-                parts.append(f"Storage: {cols[2]} usado / {cols[1]} total ({cols[4]} ocupado)")
-    except Exception:
-        parts.append("Storage: indisponível")
-
-    # Uptime
-    try:
-        res = subprocess.run(
-            ["uptime", "-p"], capture_output=True, text=True, timeout=5
-        )
-        if res.returncode == 0:
-            parts.append(f"Uptime: {res.stdout.strip()}")
-    except Exception:
-        pass
-
-    # RAM
-    try:
-        res = subprocess.run(
-            ["free", "-m"], capture_output=True, text=True, timeout=5
-        )
-        if res.returncode == 0:
-            lines = res.stdout.strip().split("\n")
-            if len(lines) > 1:
-                cols = lines[1].split()
-                # Mem: total used free shared buffers cached
-                parts.append(f"RAM: {cols[2]}MB usado / {cols[1]}MB total")
-    except Exception:
-        pass
-
-    # CPU
-    try:
-        res = subprocess.run(
-            ["top", "-n", "1", "-m", "1"], capture_output=True, text=True, timeout=5
-        )
-        if res.returncode == 0:
-            for line in res.stdout.split("\n"):
-                if line.startswith("User"):
-                    parts.append(f"CPU: {line.strip()}")
-                    break
-    except Exception:
-        pass
-
     return "\n  ".join(parts) if parts else "Status do sistema indisponível."
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Hardware Control (Cyber-Mãos)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async def turn_on_flashlight(on: bool = True) -> str:
-    """Acende ou apaga a lanterna do dispositivo via termux-torch."""
-    import subprocess
-    cmd = "on" if on else "off"
-    try:
-        res = subprocess.run(
-            ["termux-torch", cmd], capture_output=True, text=True, timeout=5
-        )
-        if res.returncode == 0:
-            return f"Lanterna {'ligada' if on else 'desligada'} com sucesso."
-        return f"Falha ao controlar lanterna: {res.stderr}"
-    except Exception as e:
-        return f"Erro ao acessar termux-torch: {e}"
-
-
-async def get_location() -> str:
-    """Pega a localização atual do GPS."""
-    import subprocess
-    import json as json_mod
-    try:
-        res = subprocess.run(
-            ["termux-location", "-p", "network", "-r", "once"], capture_output=True, text=True, timeout=10
-        )
-        if res.returncode == 0:
-            loc = json_mod.loads(res.stdout)
-            lat = loc.get("latitude", "?")
-            lon = loc.get("longitude", "?")
-            return f"Localização atual: Latitude {lat}, Longitude {lon} (https://maps.google.com/?q={lat},{lon})"
-        return f"Falha ao obter localização: {res.stderr}"
-    except Exception as e:
-        return f"Erro ao acessar termux-location: {e}"
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# File I/O — Kitty Shadow (workspace de arquivos)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-async def write_to_shadow(filename: str, content: str) -> str:
-    """Salva arquivo no Kitty_Shadow (pasta de trabalho)."""
-    config.SHADOW_DIR.mkdir(exist_ok=True)
-    filepath = config.SHADOW_DIR / filename
-    filepath.write_text(content, encoding="utf-8")
-    return str(filepath)
-
-
-async def read_file(filename: str) -> str:
-    """Lê arquivo do Kitty_Shadow."""
-    filepath = config.SHADOW_DIR / filename
-    if filepath.exists():
-        return filepath.read_text(encoding="utf-8")
-    return f"Arquivo '{filename}' não encontrado."
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -879,44 +747,6 @@ def load_identity() -> str:
     return "\n\n---\n\n".join(identity_parts)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Gerenciamento de Fila Swarm (Anti-Crash)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-async def add_swarm_job(role_name: str, payload: str) -> int:
-    """Insere um novo job pendente na fila do BD."""
-    async with aiosqlite.connect(str(config.DB_PATH)) as db:
-        cursor = await db.execute(
-            "INSERT INTO swarm_jobs (role_name, payload) VALUES (?, ?)",
-            (role_name, payload)
-        )
-        await db.commit()
-        return cursor.lastrowid
-
-async def get_pending_swarm_jobs() -> list[dict]:
-    """Retorna todos os jobs pending ou processing (recuperação pós-crash)."""
-    async with aiosqlite.connect(str(config.DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM swarm_jobs WHERE status IN ('pending', 'processing') ORDER BY created_at ASC"
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
-
-async def update_swarm_job_status(job_id: int, status: str, result: str = None):
-    """Atualiza o status (e resultado opcional) de um job no banco."""
-    async with aiosqlite.connect(str(config.DB_PATH)) as db:
-        if result is not None:
-            await db.execute(
-                "UPDATE swarm_jobs SET status = ?, result = ? WHERE id = ?",
-                (status, result, job_id)
-            )
-        else:
-            await db.execute(
-                "UPDATE swarm_jobs SET status = ? WHERE id = ?",
-                (status, job_id)
-            )
-        await db.commit()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Stateful Todo Machine (Fase 1)
