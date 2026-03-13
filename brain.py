@@ -26,6 +26,7 @@ import swarm
 import council
 import semantic_router
 import settings_manager
+import self_healing
 
 logger = logging.getLogger("brain")
 
@@ -49,6 +50,8 @@ class IaraState(TypedDict, total=False):
     _stream_queue: Any           # Internal: For SSE streaming (SOTA 2026)
     specialist: str              # For specialist_node routing
     confidence: float            # For autonomous audit triggers (SOTA 2026)
+    retry_count: int             # To prevent infinite healing loops
+    blacklist: list[str]         # Tools/Specialists to avoid in current session
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -409,12 +412,34 @@ async def route_by_intent(state: IaraState) -> str | list[Send]:
 
 
 async def audit_router(state: IaraState) -> str:
-    """Reroutes to audit_node if confidence is low."""
+    """
+    Reroutes based on confidence tiers (SOTA 2026 Phase 15):
+    - 0.85+ : Success -> formatter_node
+    - 0.60-0.84 : Ambiguous -> audit_node (o1 verification)
+    - < 0.60 : Failure -> self_healing_node (Fly-plan rewriting)
+    """
     confidence = state.get("confidence", 1.0)
-    if confidence < 0.85:
-        logger.warning(f"🛡️ Low confidence ({confidence:.2f}) detected. Routing to Audit Node.")
+    retry_count = state.get("retry_count", 0)
+    
+    if retry_count >= 2:
+        logger.warning(f"🚫 Max retries reached ({retry_count}). Forcing format.")
+        return "formatter_node"
+        
+    if confidence < 0.60:
+        logger.warning(f"🔧 Low confidence ({confidence:.2f}) detected. Routing to Self-Healing.")
+        return "self_healing_node"
+    elif confidence < 0.85:
+        logger.warning(f"🛡️ Moderate confidence ({confidence:.2f}) detected. Routing to Audit Node.")
         return "audit_node"
+        
     return "formatter_node"
+
+
+async def self_healing_node(state: IaraState) -> dict:
+    """Delegates heavy lifting of meta-cognition to specialized module."""
+    updates = await self_healing.heal_state(state)
+    updates["retry_count"] = state.get("retry_count", 0) + 1
+    return updates
 
 
 async def audit_node(state: IaraState) -> dict:
@@ -472,6 +497,7 @@ def build_graph() -> StateGraph:
     graph.add_node("specialist_node", specialist_node)
     graph.add_node("chat_node", chat_node)
     graph.add_node("audit_node", audit_node)
+    graph.add_node("self_healing_node", self_healing_node)
     graph.add_node("formatter_node", formatter_node)
 
     # Entry point
@@ -494,13 +520,21 @@ def build_graph() -> StateGraph:
     graph.add_edge("memory_node", "chat_node")
 
     # Execution nodes flow to audit_router first
-    graph.add_conditional_edges("tools_node", audit_router, {"audit_node": "audit_node", "formatter_node": "formatter_node"})
-    graph.add_conditional_edges("council_node", audit_router, {"audit_node": "audit_node", "formatter_node": "formatter_node"})
-    graph.add_conditional_edges("specialist_node", audit_router, {"audit_node": "audit_node", "formatter_node": "formatter_node"})
-    graph.add_conditional_edges("chat_node", audit_router, {"audit_node": "audit_node", "formatter_node": "formatter_node"})
+    common_destinations = {
+        "audit_node": "audit_node", 
+        "self_healing_node": "self_healing_node", 
+        "formatter_node": "formatter_node"
+    }
+    graph.add_conditional_edges("tools_node", audit_router, common_destinations)
+    graph.add_conditional_edges("council_node", audit_router, common_destinations)
+    graph.add_conditional_edges("specialist_node", audit_router, common_destinations)
+    graph.add_conditional_edges("chat_node", audit_router, common_destinations)
     
-    # Audit Node always goes to formatter
+    # Audit Node goes to formatter
     graph.add_edge("audit_node", "formatter_node")
+
+    # Self-Healing loops back to router_node to try the new plan
+    graph.add_edge("self_healing_node", "router_node")
 
     # Formatter → END
     graph.add_edge("formatter_node", END)
@@ -535,6 +569,8 @@ async def process(text: str, chat_id: int) -> str:
         "task_type": "chat",
         "_stream_queue": None,
         "confidence": 1.0,
+        "retry_count": 0,
+        "blacklist": [],
     }
 
     try:
@@ -565,6 +601,8 @@ async def process_stream(text: str, chat_id: int) -> AsyncGenerator[str, None]:
         "task_type": "chat",
         "_stream_queue": token_queue,
         "confidence": 1.0,
+        "retry_count": 0,
+        "blacklist": [],
     }
 
     # Run the graph in a separate task

@@ -8,6 +8,8 @@ import logging
 import json
 from datetime import datetime
 import importlib
+import subprocess
+import os
 
 import memory
 import brain
@@ -51,6 +53,9 @@ class AutonomousScheduler:
                 
                 # 3. Random Auto-Audit
                 await self.task_auto_audit()
+
+                # 4. Infrastructure Drift Check (SOTA 2026)
+                await self.task_infra_drift_check()
                 
             except Exception as e:
                 logger.error(f"❌ Scheduler loop error: {e}", exc_info=True)
@@ -102,6 +107,58 @@ class AutonomousScheduler:
         # In a real scenario, we'd fetch a random recently saved response from Redis/DB
         # For now, it's a placeholder for the logic
         pass
+
+    async def task_infra_drift_check(self):
+        """
+        Monitors core Docker containers and restarts them if they are down.
+        Targets: litellm, qdrant, redis, infinity, postgres-iara
+        """
+        logger.info("🚜 Task: Infra Drift Check (Docker Socket)...")
+        
+        containers = ["litellm", "qdrant", "redis", "infinity", "postgres-iara"]
+        socket_path = "/var/run/docker.sock"
+        
+        if not os.path.exists(socket_path):
+            logger.warning(f"⚠️ Docker socket not found at {socket_path}. Skipping drift check.")
+            return
+
+        for container in containers:
+            try:
+                # We use curl against the unix socket for a zero-dep health check
+                # Requirements: curl must be installed in the environment
+                cmd = [
+                    "curl", "--unix-socket", socket_path,
+                    f"http://localhost/v1.41/containers/{container}/json"
+                ]
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                stdout, stderr = await process.communicate()
+                
+                if process.returncode != 0:
+                    logger.error(f"❌ Failed to query Docker socket for {container}: {stderr.decode()}")
+                    continue
+                
+                info = json.loads(stdout.decode())
+                state = info.get("State", {})
+                status = state.get("Status", "unknown")
+                
+                if status != "running":
+                    logger.warning(f"🚨 Container {container} is {status}. Attempting restart...")
+                    restart_cmd = [
+                        "curl", "-X", "POST", "--unix-socket", socket_path,
+                        f"http://localhost/v1.41/containers/{container}/restart"
+                    ]
+                    r_process = await asyncio.create_subprocess_exec(*restart_cmd)
+                    await r_process.wait()
+                    logger.info(f"✅ Restart signal sent to {container}.")
+                else:
+                    logger.debug(f"🟢 Container {container} is healthy (running).")
+                    
+            except Exception as e:
+                logger.error(f"⚠️ Error checking drift for {container}: {e}")
 
 # Global instance
 scheduler = AutonomousScheduler()
