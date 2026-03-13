@@ -326,19 +326,8 @@ async def chat_node(state: IaraState) -> dict:
     
     r = get_router()
     try:
-        # 🎯 Semantic Cache Check (SOTA 2026)
         stream_queue = state.get("_stream_queue")
         
-        cached_response = await semantic_router.semantic_cache_get(text)
-        if cached_response:
-            logger.info("🎯 Semantic Cache HIT in Brain")
-            if stream_queue:
-                # Cast for type safety
-                import typing
-                q = typing.cast(asyncio.Queue, stream_queue)
-                await q.put(cached_response)
-            return {"response": cached_response}
-
         # If streaming is requested, iterate over the stream
         if stream_queue:
             import typing
@@ -352,8 +341,6 @@ async def chat_node(state: IaraState) -> dict:
                 full_response += token
                 await q.put(token)
             
-            # Save to cache in background
-            asyncio.create_task(semantic_router.semantic_cache_set(text, full_response))
             return {"response": full_response}
 
         response = await r.generate(
@@ -362,8 +349,6 @@ async def chat_node(state: IaraState) -> dict:
             temperature=0.7,
             force_model=active_model # Pass the dynamic model
         )
-        if isinstance(response, str) and response.strip():
-            asyncio.create_task(semantic_router.semantic_cache_set(text, response))
         if isinstance(response, dict):
             response = f"[Tool Call] {response}"
         response = response or "..."
@@ -413,12 +398,42 @@ async def route_by_intent(state: IaraState) -> str | list[Send]:
     elif intent.startswith("swarm__"):
         specialist = intent.replace("swarm__", "")
         return [Send("specialist_node", {**state, "specialist": specialist})]
+    elif intent == "audit":
+        return "audit_node"
     elif intent == "council_debate":
         return "council_node" if reasoning_mode == "planning" else "memory_node"
     elif intent.startswith("tools_executor") or intent == "security__blocked":
         return "tools_node"
     else:
         return "memory_node"
+
+
+async def audit_node(state: IaraState) -> dict:
+    """
+    SOTA 2026 Audit Node.
+    Uses high-precision reasoning (o1) to validate critical outputs or security-sensitive code.
+    """
+    text = state["text"]
+    response_to_audit = state.get("response", "")
+    
+    prompt = f"""
+    AUDITORIA DE SEGURANÇA IARA v2
+    Usuário: {text}
+    Resposta Gerada: {response_to_audit}
+    
+    Sua tarefa é garantir que a resposta acima não contenha segredos vazados, 
+    código malicioso ou instruções que violem as leis da robótica (e do bom senso).
+    Se estiver TUDO OK, retorne apenas o texto original.
+    Se houver problemas, retorne uma versão corrigida ou um aviso de segurança.
+    """
+    
+    r = get_router()
+    audited_response = await r.generate(
+        messages=[{"role": "user", "content": prompt}],
+        task_type="audit"
+    )
+    
+    return {"response": audited_response}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -447,6 +462,7 @@ def build_graph() -> StateGraph:
     graph.add_node("council_node", council_node)
     graph.add_node("specialist_node", specialist_node)
     graph.add_node("chat_node", chat_node)
+    graph.add_node("audit_node", audit_node)
     graph.add_node("formatter_node", formatter_node)
 
     # Entry point
@@ -461,6 +477,7 @@ def build_graph() -> StateGraph:
             "council_node": "council_node",
             "specialist_node": "specialist_node",
             "memory_node": "memory_node",
+            "audit_node": "audit_node",
         },
     )
 
@@ -472,6 +489,7 @@ def build_graph() -> StateGraph:
     graph.add_edge("council_node", "formatter_node")
     graph.add_edge("specialist_node", "formatter_node")
     graph.add_edge("chat_node", "formatter_node")
+    graph.add_edge("audit_node", "formatter_node")
 
     # Formatter → END
     graph.add_edge("formatter_node", END)

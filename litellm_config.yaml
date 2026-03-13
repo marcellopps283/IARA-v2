@@ -1,0 +1,80 @@
+model_list:
+  # ── Western Primary / Fast ──
+  - model_name: groq-llama-3.1-70b
+    litellm_params:
+      model: groq/llama-3.1-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+      rpm: 30
+
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  # ── SOTA 2026 Eastward / Reasoning ──
+  - model_name: minimax-m2.5
+    litellm_params:
+      model: minimax/minimax-m2.5
+      api_base: https://api.minimax.io/v1
+      api_key: os.environ/MINIMAX_API_KEY
+
+  - model_name: deepseek-r1-siliconflow
+    litellm_params:
+      model: openai/deepseek-ai/DeepSeek-R1
+      api_base: https://api.siliconflow.cn/v1
+      api_key: os.environ/SILICONFLOW_API_KEY
+      max_tokens: 16384
+
+  - model_name: qwen-coder-dashscope
+    litellm_params:
+      model: dashscope/qwen-2.5-coder-32b-instruct
+      api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+  - model_name: zhipu-glm-4-flash
+    litellm_params:
+      model: zhipu/glm-4-flash
+      api_key: os.environ/ZHIPU_API_KEY
+
+  # ── Vision & Multi-modal ──
+  - model_name: vision-fallback-qwen
+    litellm_params:
+      model: dashscope/qwen-vl-plus
+      api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+  # ── Specialized Nodes (Audit/Intent) ──
+  - model_name: intent-classifier-qwen
+    litellm_params:
+      model: cloudflare/@cf/qwen/qwen1.5-0.5b-chat
+      api_base: https://api.cloudflare.com/client/v4/accounts/os.environ/CF_ACCOUNT_ID/ai/run/
+      api_key: os.environ/CF_API_TOKEN
+
+  - model_name: github-models-o1
+    litellm_params:
+      model: github/o1
+      api_key: os.environ/GITHUB_MODELS_TOKEN
+
+  # ── Embeddings (Cloudflare) ──
+  - model_name: cloudflare-bge-large
+    litellm_params:
+      model: cloudflare/@cf/baai/bge-large-en-v1.5
+      api_base: https://api.cloudflare.com/client/v4/accounts/os.environ/CF_ACCOUNT_ID/ai/run/
+      api_key: os.environ/CF_API_TOKEN
+
+litellm_settings:
+  drop_params: True
+  set_verbose: False
+  success_callback: ["cache"]
+  failure_callback: ["sentry"]
+  routing_strategy: latency-based-routing
+  enable_pre_call_checks: True
+
+cache_settings:
+  type: redis-semantic
+  similarity_threshold: 0.88
+  embedding_model: cloudflare-bge-large
+  ttl: 600
+  redis_host: os.environ/REDIS_HOST
+  redis_port: os.environ/REDIS_PORT
+  redis_password: os.environ/REDIS_PASSWORD

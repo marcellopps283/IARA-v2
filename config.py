@@ -143,4 +143,33 @@ LLM_PROVIDERS = [
         "supports_tools": False,
         "supports_streaming": True,
     },
+    # ── DashScope International (SOTA 2026) ──
+    {
+        "name": "dashscope",
+        "api_key": os.getenv("DASHSCOPE_API_KEY"),
+        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-2.5-coder-32b-instruct",
+        "max_tokens": 4096,
+        "supports_tools": True,
+        "supports_streaming": True
+    },
+    {
+        "name": "dashscope-vl",
+        "api_key": os.getenv("DASHSCOPE_API_KEY"),
+        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-vl-plus",
+        "max_tokens": 4096,
+        "supports_tools": False,
+        "supports_streaming": True
+    },
+    # ── MiniMax International ──
+    {
+        "name": "minimax",
+        "api_key": os.getenv("MINIMAX_API_KEY"),
+        "base_url": "https://api.minimax.io/v1",
+        "model": "minimax-m2.5",
+        "max_tokens": 8192,
+        "supports_tools": True,
+        "supports_streaming": True
+    },
 ]

@@ -30,6 +30,7 @@ import ops_bot
 import memory_manager
 import memory
 import settings_manager
+import scheduler
 from datetime import datetime
 import time
 
@@ -139,6 +140,9 @@ async def lifespan(app: FastAPI):
     # 🚀 Warm up semantic engines (Embeddings, Mem0, LightRAG) - SOTA 2026
     logger.info("🔥 Phase 12: Starting Warmup Blitz...")
     try:
+        # Start Autonomous Scheduler (Phase 14)
+        await scheduler.start()
+        
         # Pre-warm embeddings
         import semantic_router
         await semantic_router.get_embedding("warmup query for latency")
@@ -213,6 +217,9 @@ async def lifespan(app: FastAPI):
             pass
         await ptb_app.stop()
         await ptb_app.shutdown()
+
+    # Stop Scheduler
+    await scheduler.stop()
 
 # Create FastAPI App
 app = FastAPI(

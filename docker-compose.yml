@@ -85,6 +85,23 @@ services:
         limits:
           memory: 4G
 
+  # ── LiteLLM (Gateway Proxy — SOTA 2026) ───────────────
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
   # ── IARA Core (O Cérebro) ──────────────────────────────
   iara-core:
     build:
@@ -107,6 +124,8 @@ services:
       qdrant:
         condition: service_started
       infinity:
+        condition: service_started
+      litellm:
         condition: service_started
 
 volumes:
