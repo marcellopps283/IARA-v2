@@ -90,7 +90,7 @@ class AutonomousScheduler:
         router = brain.get_router()
         try:
             start = datetime.now()
-            await router.generate([{"role": "user", "content": "ping"}], task_type="chat_fast")
+            await router.generate([{"role": "user", "content": "ping"}], task_type="fast")
             latency = (datetime.now() - start).total_seconds()
             logger.info(f"LLM Gateway Latency: {latency:.2f}s")
         except Exception as e:
