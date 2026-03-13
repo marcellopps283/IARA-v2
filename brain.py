@@ -284,7 +284,9 @@ async def council_node(state: IaraState) -> dict:
 
     logger.info("⚖️ Invoking Council debate...")
     response = await council.debate(text, context=str(state.get("conversation", [])))
-    return {"response": response}
+    
+    confidence = 0.45 if not response or response.startswith(("❌", "⚠️")) else 0.90
+    return {"response": response, "confidence": confidence}
 
 
 async def specialist_node(state: IaraState) -> dict:
@@ -308,7 +310,8 @@ async def specialist_node(state: IaraState) -> dict:
         import memory_manager
         asyncio.create_task(memory_manager.ingest_knowledge_graph(response))
 
-    return {"response": response}
+    confidence = 0.45 if not response or response.startswith(("❌", "⚠️")) else 0.90
+    return {"response": response, "confidence": confidence}
 
 
 async def chat_node(state: IaraState) -> dict:
@@ -346,7 +349,8 @@ async def chat_node(state: IaraState) -> dict:
                 full_response += token
                 await q.put(token)
             
-            return {"response": full_response}
+            confidence = 0.45 if not full_response or full_response.startswith(("❌", "⚠️")) else 0.90
+            return {"response": full_response, "confidence": confidence}
 
         response = await r.generate(
             messages=messages,
@@ -355,16 +359,18 @@ async def chat_node(state: IaraState) -> dict:
             force_model=active_model # Pass the dynamic model
         )
         if isinstance(response, dict):
-            response = f"[Tool Call] {response}"
+            response = str(response)
         response = response or "..."
     except RuntimeError as e:
         logger.error(f"❌ All LLM providers failed: {e}")
         response = "⚠️ Desculpa Criador, todos os meus cérebros falharam. Tenta de novo!"
     except Exception as e:
         logger.error(f"❌ Brain error: {e}", exc_info=True)
-        response = f"❌ Erro interno: {str(e)[:200]}"
+        err_msg = str(e)
+        response = f"❌ Erro interno: {err_msg[:200]}"
 
-    return {"response": response}
+    confidence = 0.45 if not response or response.startswith(("❌", "⚠️")) else 0.90
+    return {"response": response, "confidence": confidence}
 
 
 async def formatter_node(state: IaraState) -> dict:
@@ -418,8 +424,8 @@ async def audit_router(state: IaraState) -> str:
     - 0.60-0.84 : Ambiguous -> audit_node (o1 verification)
     - < 0.60 : Failure -> self_healing_node (Fly-plan rewriting)
     """
-    confidence = state.get("confidence", 1.0)
-    retry_count = state.get("retry_count", 0)
+    confidence = float(state.get("confidence", 1.0))
+    retry_count = int(state.get("retry_count", 0))
     
     if retry_count >= 2:
         logger.warning(f"🚫 Max retries reached ({retry_count}). Forcing format.")

@@ -33,8 +33,12 @@ class AutonomousScheduler:
         # Ensure memory backends (Redis + SQLite) are ready
         await memory.init()
         
-        # Start the main loop
+        # Start the main loop (proactive audits)
         asyncio.create_task(self._main_loop())
+        # Start high-frequency loops (SOTA 2026 Phase 15)
+        asyncio.create_task(self._drift_loop())
+        asyncio.create_task(self._health_check_loop())
+        asyncio.create_task(self._memory_refinement_loop())
 
     async def stop(self):
         """Stops the scheduler."""
@@ -42,20 +46,11 @@ class AutonomousScheduler:
         logger.info("🛑 IARA Background Scheduler Stopped")
 
     async def _main_loop(self):
-        """Main loop that checks for pending jobs every minute."""
+        """Main loop that checks for pending jobs every hour (less frequent tasks)."""
         while self.running:
             try:
-                # 1. Memory Refinement (Consolidação)
-                await self.task_memory_refinement()
-                
-                # 2. System Health Check
-                await self.task_health_check()
-                
                 # 3. Random Auto-Audit
                 await self.task_auto_audit()
-
-                # 4. Infrastructure Drift Check (SOTA 2026)
-                await self.task_infra_drift_check()
                 
             except Exception as e:
                 logger.error(f"❌ Scheduler loop error: {e}", exc_info=True)
@@ -63,6 +58,33 @@ class AutonomousScheduler:
             # Wait for 1 hour (or adjusted interval)
             # For now, let's keep it at 1 hour for background maintenance
             await asyncio.sleep(3600)
+
+    async def _drift_loop(self):
+        """Loop for high-frequency infrastructure drift checks (e.g., every minute)."""
+        while self.running:
+            try:
+                await self.task_infra_drift_check()
+            except Exception as e:
+                logger.error(f"❌ Drift loop error: {e}", exc_info=True)
+            await asyncio.sleep(60) # Check every minute
+
+    async def _health_check_loop(self):
+        """Loop for medium-frequency system health checks (e.g., every 5 minutes)."""
+        while self.running:
+            try:
+                await self.task_health_check()
+            except Exception as e:
+                logger.error(f"❌ Health check loop error: {e}", exc_info=True)
+            await asyncio.sleep(300) # Check every 5 minutes
+
+    async def _memory_refinement_loop(self):
+        """Loop for medium-frequency memory refinement (e.g., every 10 minutes)."""
+        while self.running:
+            try:
+                await self.task_memory_refinement()
+            except Exception as e:
+                logger.error(f"❌ Memory refinement loop error: {e}", exc_info=True)
+            await asyncio.sleep(600) # Refine every 10 minutes
 
     async def task_memory_refinement(self):
         """
@@ -132,8 +154,8 @@ class AutonomousScheduler:
                 ]
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
                 )
                 stdout, stderr = await process.communicate()
                 
@@ -153,7 +175,20 @@ class AutonomousScheduler:
                     ]
                     r_process = await asyncio.create_subprocess_exec(*restart_cmd)
                     await r_process.wait()
-                    logger.info(f"✅ Restart signal sent to {container}.")
+                    
+                    # Confirm Recovery
+                    await asyncio.sleep(5)
+                    confirm_process = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, _ = await confirm_process.communicate()
+                    info = json.loads(stdout.decode())
+                    if info.get("State", {}).get("Status") == "running":
+                        logger.info(f"✅ Container {container} confirmed running after restart.")
+                    else:
+                        logger.error(f"❌ Container {container} FAILED to recover after restart.")
                 else:
                     logger.debug(f"🟢 Container {container} is healthy (running).")
                     

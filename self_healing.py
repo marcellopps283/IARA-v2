@@ -5,6 +5,7 @@ Handles state rectification when execution confidence is low.
 
 import logging
 import json
+import re
 import config
 from typing import Any
 
@@ -58,13 +59,15 @@ async def heal_state(state: Any) -> dict:
             # This shouldn't happen for this prompt, but let's be safe
             response = str(response)
             
-        # Extract JSON from response
-        # Sometimes markdown blocks are returned
-        json_match = response.replace("```json", "").replace("```", "").strip()
-        analysis = json.loads(json_match)
+        # Extract JSON from response using regex
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if not json_match:
+            raise ValueError("No JSON found in response")
+        analysis = json.loads(json_match.group(0))
         
         reason = analysis.get("reason", "Erro indefinido")
         new_instruction = analysis.get("new_instruction", last_text)
+        blacklist_tool = analysis.get("blacklist_tool", "") # Extract blacklist_tool
         
         logger.info(f"💡 Healing Plan: {reason}")
         
@@ -76,7 +79,8 @@ async def heal_state(state: Any) -> dict:
         return {
             "text": f"{new_instruction} (Obs: a tentativa anterior falhou por: {reason})",
             "confidence": 0.5, # Reset confidence marginally to avoid infinite loop
-            "response": healing_message
+            "response": healing_message,
+            "blacklist": [blacklist_tool] if blacklist_tool else [] # Include blacklist
         }
         
     except Exception as e:
