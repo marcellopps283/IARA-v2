@@ -1,8 +1,8 @@
 model_list:
   # ── Western Primary / Fast ──
-  - model_name: groq-llama-3.1-70b
+  - model_name: groq-llama-3.3-70b
     litellm_params:
-      model: groq/llama-3.1-70b-versatile
+      model: groq/llama-3.3-70b-versatile
       api_key: os.environ/GROQ_API_KEY
       rpm: 30
 
@@ -47,7 +47,7 @@ model_list:
   - model_name: intent-classifier-qwen
     litellm_params:
       model: cloudflare/@cf/qwen/qwen1.5-0.5b-chat
-      api_base: https://api.cloudflare.com/client/v4/accounts/os.environ/CF_ACCOUNT_ID/ai/run/
+      api_base: os.environ/CF_WORKERS_AI_BASE_URL
       api_key: os.environ/CF_API_TOKEN
 
   - model_name: github-models-o1
@@ -59,7 +59,7 @@ model_list:
   - model_name: cloudflare-bge-large
     litellm_params:
       model: cloudflare/@cf/baai/bge-large-en-v1.5
-      api_base: https://api.cloudflare.com/client/v4/accounts/os.environ/CF_ACCOUNT_ID/ai/run/
+      api_base: os.environ/CF_WORKERS_AI_BASE_URL
       api_key: os.environ/CF_API_TOKEN
 
 litellm_settings:

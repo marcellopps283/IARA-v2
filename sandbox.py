@@ -140,6 +140,7 @@ async def redcoder_loop(goal: str, initial_code: str = "", iterations: int = 3) 
             if "PASS" in red_feedback.upper()[:10]:
                 logger.info("🟢 Red Team deu PASS inesperado, mas vamos aceitar.")
                 result["iterations"] = i + 1
+                result["confidence"] = 0.8 # Score below target threshold
                 return result
 
             # 3. Blue Team Refactor (Builder)
@@ -169,6 +170,7 @@ async def redcoder_loop(goal: str, initial_code: str = "", iterations: int = 3) 
             if "PASS" in red_check.upper()[:10]:
                 logger.info("🏆 REDCODER: Código validado!")
                 result["iterations"] = i + 1
+                result["confidence"] = 1.0
                 return result
             else:
                 logger.warning(f"🔴 Red Team encontrou falha lógica: {red_check[:100]}...")
@@ -185,4 +187,5 @@ async def redcoder_loop(goal: str, initial_code: str = "", iterations: int = 3) 
     # Se atingiu o limite, retorna o último resultado
     result["iterations"] = iterations
     result["final_code"] = current_code
+    result["confidence"] = 0.0 if result["exit_code"] != 0 else 0.7  # Low confidence if no PASS
     return result

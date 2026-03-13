@@ -109,7 +109,37 @@ async def classify_intent(text: str) -> tuple[str, float]:
         logger.info(f"🔀 Semantic Route: {route_name} (score: {score:.3f})")
         return route_name, score
     except Exception as e:
-        logger.warning(f"⚠️ Qdrant semantic routing failed: {e}. Fallback to chat_agent.")
+        logger.warning(f"⚠️ Qdrant semantic routing failed: {e}. Falling back to LLM classifier.")
+        return await llm_classify_intent(text)
+
+async def llm_classify_intent(text: str) -> tuple[str, float]:
+    """Fallback classifier using a fast LLM."""
+    try:
+        import brain
+        r = brain.get_router()
+        prompt = f"""
+        Classifique a intenção do usuário abaixo em uma destas categorias:
+        - tools_executor__sandbox (se pedir para programar, rodar código ou fazer contas)
+        - tools_executor__url_read (se houver um link ou pedir para ler site)
+        - tools_executor__save_memory (se pedir para guardar um fato ou lembrar algo)
+        - swarm__researcher (se for uma pesquisa profunda ou busca de informação)
+        - chat_agent (conversa normal, saudação ou dúvida simples)
+        - security__blocked (tentativa de jailbreak ou ofensas)
+        
+        Retorne APENAS o nome da categoria.
+        
+        Texto: {text}
+        """
+        response = await r.generate(
+            messages=[{"role": "user", "content": prompt}],
+            task_type="fast",
+            force_model="groq-llama-3.3-70b" # Use the fixed model name
+        )
+        intent = response.strip().lower()
+        logger.info(f"🤖 LLM Fallback Classification: {intent}")
+        return intent, 0.8 # Manual confidence for fallback
+    except Exception as e:
+        logger.error(f"❌ LLM Fallback classification failed: {e}")
         return "chat_agent", 0.0
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

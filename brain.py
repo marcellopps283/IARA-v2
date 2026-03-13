@@ -48,6 +48,7 @@ class IaraState(TypedDict, total=False):
     task_type: str               # For LLM router prioritization
     _stream_queue: Any           # Internal: For SSE streaming (SOTA 2026)
     specialist: str              # For specialist_node routing
+    confidence: float            # For autonomous audit triggers (SOTA 2026)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -195,18 +196,18 @@ async def tools_node(state: IaraState) -> dict:
         stderr = result.get("stderr", "")
         iters = result.get("iterations", 1)
         
-        if result.get("exit_code") == 0:
+        if result.get("exit_code") == 0 and result.get("confidence", 0) >= 0.85:
             response = (
                 f"✅ **REDCODER (gVisor 2026)**\n\n"
                 f"**Output:**\n```\n{stdout}\n```\n\n"
                 f"*Resolvido em {iters} iteração(ões) com isolamento total.*"
             )
         else:
-            response = (
-                f"❌ **Falha de Execução (REDCODER):**\n"
-                f"```\n{stderr}\n```\n\n"
-                f"*O sistema tentou {iters} correções sem sucesso.*"
-            )
+            # If code failed or logic is shaky, we set the response and let the audit_router handle it
+            response = stdout if result.get("exit_code") == 0 else stderr
+            return {"response": response, "confidence": result.get("confidence", 0.0)}
+
+    # ── URL reading ──
 
     # ── URL reading ──
     elif intent == "tools_executor__url_read":
@@ -398,14 +399,21 @@ async def route_by_intent(state: IaraState) -> str | list[Send]:
     elif intent.startswith("swarm__"):
         specialist = intent.replace("swarm__", "")
         return [Send("specialist_node", {**state, "specialist": specialist})]
-    elif intent == "audit":
-        return "audit_node"
     elif intent == "council_debate":
         return "council_node" if reasoning_mode == "planning" else "memory_node"
     elif intent.startswith("tools_executor") or intent == "security__blocked":
         return "tools_node"
     else:
         return "memory_node"
+
+
+async def audit_router(state: IaraState) -> str:
+    """Reroutes to audit_node if confidence is low."""
+    confidence = state.get("confidence", 1.0)
+    if confidence < 0.85:
+        logger.warning(f"🛡️ Low confidence ({confidence:.2f}) detected. Routing to Audit Node.")
+        return "audit_node"
+    return "formatter_node"
 
 
 async def audit_node(state: IaraState) -> dict:
@@ -484,11 +492,13 @@ def build_graph() -> StateGraph:
     # Memory → Chat (sequential: load memory, then generate)
     graph.add_edge("memory_node", "chat_node")
 
-    # All execution nodes → formatter
-    graph.add_edge("tools_node", "formatter_node")
-    graph.add_edge("council_node", "formatter_node")
-    graph.add_edge("specialist_node", "formatter_node")
-    graph.add_edge("chat_node", "formatter_node")
+    # Execution nodes flow to audit_router first
+    graph.add_conditional_edges("tools_node", audit_router, {"audit_node": "audit_node", "formatter_node": "formatter_node"})
+    graph.add_conditional_edges("council_node", audit_router, {"audit_node": "audit_node", "formatter_node": "formatter_node"})
+    graph.add_conditional_edges("specialist_node", audit_router, {"audit_node": "audit_node", "formatter_node": "formatter_node"})
+    graph.add_conditional_edges("chat_node", audit_router, {"audit_node": "audit_node", "formatter_node": "formatter_node"})
+    
+    # Audit Node always goes to formatter
     graph.add_edge("audit_node", "formatter_node")
 
     # Formatter → END
