@@ -13,7 +13,7 @@ from lightrag.utils import EmbeddingFunc
 import functools
 import numpy as np
 
-import config
+import embeddings
 import settings_manager
 
 logger = logging.getLogger("memory_manager")
@@ -79,16 +79,9 @@ async def get_mem0() -> Memory:
 _lightrag_instance = None
 
 async def tei_embedding_func(texts: list[str]) -> np.ndarray:
-    """Custom embedding function using Infinity TEI."""
-    import httpx
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(
-            f"{config.TEI_URL}/embeddings",
-            json={"input": texts, "model": config.TEI_MODEL}
-        )
-        response.raise_for_status()
-        data = response.json()
-        return np.array([item["embedding"] for item in data["data"]])
+    """Custom embedding function using centralized Infinity TEI utility."""
+    vectors = await embeddings.generate_embeddings(texts)
+    return np.array(vectors)
 
 async def custom_llm_func(prompt: str, system_prompt: str | None = None, **kwargs) -> str:
     """Custom LLM function pointing to IARA's own Multi-Provider Router."""

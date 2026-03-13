@@ -7,10 +7,15 @@ Lê as intenções mapeadas, gera embeddings via TEI e insere no Qdrant.
 import asyncio
 import os
 import httpx
-from qdrant_client import QdrantClient
+import numpy as np
+from qdrant_client import QdrantClient, models
 from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.http.exceptions import ResponseHandlingException
 import uuid
 import logging
+
+import config
+import embeddings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [bootstrap] %(levelname)s: %(message)s")
 logger = logging.getLogger("bootstrap")
@@ -182,32 +187,8 @@ ROUTE_DEFINITIONS = {
 # Funções de Bootstrap
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-TEI_URL = os.getenv("TEI_URL", "http://infinity:7997")
-QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 COLLECTION_NAME = "routes"
 VECTOR_SIZE = 1024  # multilingual-e5-large output dimension
-
-
-async def get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Gera embeddings via Infinity TEI microservice (em chunks para evitar OOM)."""
-    CHUNK_SIZE = 1
-    all_embeddings = []
-    
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        for i in range(0, len(texts), CHUNK_SIZE):
-            chunk = texts[i:i+CHUNK_SIZE]
-            response = await client.post(
-                f"{TEI_URL}/embeddings",
-                json={"input": chunk, "model": "intfloat/multilingual-e5-large"},
-            )
-            if response.status_code != 200:
-                logger.error(f"⚠️ Erro no chunk {i}: {response.text}")
-            response.raise_for_status()
-            data = response.json()
-            all_embeddings.extend([item["embedding"] for item in data["data"]])
-            
-    return all_embeddings
 
 
 def setup_qdrant_collection(client: QdrantClient):
@@ -240,10 +221,10 @@ async def populate_routes(client: QdrantClient):
             })
 
     logger.info(f"🧮 Vetorizando {len(all_texts)} frases-âncora via TEI...")
-    embeddings = await get_embeddings(all_texts)
+    vector_results = await embeddings.generate_embeddings(all_texts)
 
     points = []
-    for i, (embedding, metadata) in enumerate(zip(embeddings, all_metadata)):
+    for i, (embedding, metadata) in enumerate(zip(vector_results, all_metadata)):
         points.append(
             PointStruct(
                 id=str(uuid.uuid4()),
@@ -267,7 +248,7 @@ async def main():
     """Ponto de entrada do bootstrap."""
     logger.info("🚀 Iniciando Bootstrap do Semantic Router...")
 
-    client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
     setup_qdrant_collection(client)
     await populate_routes(client)
 
