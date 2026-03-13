@@ -37,41 +37,6 @@ def get_redis() -> aioredis.Redis:
     return _redis
 
 
-async def get_embedding(text: str) -> list[float] | None:
-    """Generate embedding using the local Infinity TEI server with Redis cache."""
-    # ── Try Redis Cache First ──
-    try:
-        r = get_redis()
-        cache_key = f"iara:emb:{text[:100]}" # Simple key
-        cached = await r.get(cache_key)
-        if cached:
-            return json.loads(cached)
-    except Exception as e:
-        logger.debug(f"Cache miss or error: {e}")
-
-    # ── Generate new embedding ──
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{config.TEI_URL}/embeddings",
-                json={"input": text, "model": config.TEI_MODEL},
-            )
-            response.raise_for_status()
-            data = response.json()
-            vector = data["data"][0]["embedding"]
-            
-            # ── Save to Cache ──
-            try:
-                await r.setex(cache_key, EMBEDDING_CACHE_TTL, json.dumps(vector))
-            except Exception:
-                pass
-                
-            return vector
-    except Exception as e:
-        logger.warning(f"⚠️ Embedding failed in router: {e}")
-        return None
-
-
 async def classify_intent(text: str) -> tuple[str, float]:
     """
     Semantically classify the user's intent by embedding their text
@@ -81,7 +46,7 @@ async def classify_intent(text: str) -> tuple[str, float]:
         tuple: (route_name, confidence_score)
         If confidence < MIN_SCORE_THRESHOLD, falls back to 'chat_agent'.
     """
-    vector = await get_embedding(text)
+    vector = await embeddings.generate_embedding(text)
     if not vector:
         # Fallback if embedding fails
         return "chat_agent", 0.0
