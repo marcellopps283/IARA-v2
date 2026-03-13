@@ -39,6 +39,7 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 summary TEXT NOT NULL,
                 tags TEXT DEFAULT '',
+                kg_processed INTEGER DEFAULT 0,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -118,6 +119,13 @@ async def init_db():
                 if "duplicate column name" not in str(e).lower():
                     logger.warning(f"Erro ao migrar tabela {table}: {e}")
             
+            try:
+                if table == "episodic_memory":
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN kg_processed INTEGER DEFAULT 0")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    logger.warning(f"Erro ao adicionar kg_processed na tabela {table}: {e}")
+
             # Trabalharemos com BLOB (bytes) para guardar arrays do embedding
             try:
                 if table in ["episodic_memory", "core_memory"]:
@@ -421,10 +429,10 @@ async def search_episodes(query: str, limit: int = 3) -> list[dict]:
     ]
 
 async def get_unprocessed_episodes(limit: int = 50) -> list[dict]:
-    """Retorna os episódios mais antigos para consolidação na core memory."""
+    """Retorna os episódios mais antigos que ainda não foram para o Knowledge Graph."""
     async with aiosqlite.connect(str(config.DB_PATH)) as db:
         cursor = await db.execute(
-            "SELECT id, summary, timestamp FROM episodic_memory ORDER BY id ASC LIMIT ?",
+            "SELECT id, summary, timestamp FROM episodic_memory WHERE kg_processed = 0 ORDER BY id ASC LIMIT ?",
             (limit,)
         )
         rows = await cursor.fetchall()
@@ -433,6 +441,13 @@ async def get_unprocessed_episodes(limit: int = 50) -> list[dict]:
         {"id": r[0], "summary": r[1], "timestamp": r[2]}
         for r in rows
     ]
+
+
+async def mark_episode_processed(episode_id: int):
+    """Marca um episódio como processado pelo Knowledge Graph."""
+    async with aiosqlite.connect(str(config.DB_PATH)) as db:
+        await db.execute("UPDATE episodic_memory SET kg_processed = 1 WHERE id = ?", (episode_id,))
+        await db.commit()
 
 async def delete_old_episodes(ids: list[int]):
     """Remove episódios após a consolidação."""

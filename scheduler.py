@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 import importlib
 
-import core
+import memory
 import brain
 import memory_manager
 import semantic_router
@@ -28,8 +28,8 @@ class AutonomousScheduler:
         self.running = True
         logger.info("🚀 IARA Background Scheduler Started")
         
-        # Ensure database is ready
-        await core.init_db()
+        # Ensure memory backends (Redis + SQLite) are ready
+        await memory.init()
         
         # Start the main loop
         asyncio.create_task(self._main_loop())
@@ -64,21 +64,24 @@ class AutonomousScheduler:
         Consolidates episodic memory into the knowledge graph and core memory.
         """
         logger.info("🧠 Task: Memory Refinement...")
-        # Get unprocessed episodes (logic based on core.py)
-        episodes = await core.get_unprocessed_episodes(limit=10)
+        # Get unprocessed episodes (using memory wrapper for state control)
+        episodes = await memory.get_unprocessed_episodes(limit=10)
         if not episodes:
             logger.debug("Checked: No new episodes to refine.")
             return
 
+        processed_count = 0
         for ep in episodes:
             text = ep["summary"]
             # Ingest into Knowledge Graph (LightRAG)
             await memory_manager.ingest_knowledge_graph(text)
-            logger.debug(f"Ingested episode {ep['id']} into Knowledge Graph.")
             
-        # For now, we don't delete them to avoid data loss, 
-        # but in a production setup, we'd mark them as 'processed'.
-        logger.info(f"✅ Refined {len(episodes)} memory episodes.")
+            # Mark as processed in SQLite to avoid infinite loop
+            await memory.mark_episode_processed(ep["id"])
+            processed_count += 1
+            logger.debug(f"Ingested episode {ep['id']} into Knowledge Graph and marked as processed.")
+            
+        logger.info(f"✅ Refined {processed_count} memory episodes.")
 
     async def task_health_check(self):
         """Checks latency and status of key components."""

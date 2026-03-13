@@ -11,6 +11,7 @@ from datetime import datetime
 import redis.asyncio as aioredis
 import config
 import memory_manager
+import core
 
 logger = logging.getLogger("memory")
 
@@ -41,7 +42,14 @@ async def init():
     except Exception as e:
         logger.warning(f"⚠️ Redis init failed: {e}")
 
-    logger.info("🧠 Memory stack initialized (Redis)")
+    # Init SQLite via core
+    try:
+        await core.init_db()
+        logger.info("✅ SQLite persistence initialized")
+    except Exception as e:
+        logger.warning(f"⚠️ SQLite init failed: {e}")
+
+    logger.info("🧠 Memory stack initialized (Redis + SQLite)")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -117,4 +125,18 @@ async def get_core_facts(limit: int = 10) -> list[dict]:
         if line.strip():
             facts.append({"category": "mem0", "content": line.lstrip("- ").strip(), "confidence": 1.0})
     return facts
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Background Scheduler Support
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def get_unprocessed_episodes(limit: int = 10) -> list[dict]:
+    """Proxies to core to get episodes not yet in Knowledge Graph."""
+    return await core.get_unprocessed_episodes(limit=limit)
+
+
+async def mark_episode_processed(episode_id: int):
+    """Proxies to core to mark an episode as ingested in KG."""
+    await core.mark_episode_processed(episode_id)
 

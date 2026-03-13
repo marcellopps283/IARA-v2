@@ -202,6 +202,7 @@ async def tools_node(state: IaraState) -> dict:
                 f"**Output:**\n```\n{stdout}\n```\n\n"
                 f"*Resolvido em {iters} iteração(ões) com isolamento total.*"
             )
+            return {"response": response, "confidence": result.get("confidence", 1.0)}
         else:
             # If code failed or logic is shaky, we set the response and let the audit_router handle it
             response = stdout if result.get("exit_code") == 0 else stderr
@@ -533,6 +534,7 @@ async def process(text: str, chat_id: int) -> str:
         "conversation": [],
         "task_type": "chat",
         "_stream_queue": None,
+        "confidence": 1.0,
     }
 
     try:
@@ -562,6 +564,7 @@ async def process_stream(text: str, chat_id: int) -> AsyncGenerator[str, None]:
         "conversation": [],
         "task_type": "chat",
         "_stream_queue": token_queue,
+        "confidence": 1.0,
     }
 
     # Run the graph in a separate task
