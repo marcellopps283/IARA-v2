@@ -716,11 +716,7 @@ def _weather_code_to_text(code: int) -> str:
     return codes.get(code, f"Código {code}")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# System Status — Info do dispositivo (Termux)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    return "\n  ".join(parts) if parts else "Status do sistema indisponível."
 
 
 
