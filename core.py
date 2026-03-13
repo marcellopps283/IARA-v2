@@ -10,6 +10,7 @@ import asyncio
 from datetime import datetime
 
 import config
+import embeddings
 
 logger = logging.getLogger("core")
 

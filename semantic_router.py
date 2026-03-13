@@ -12,6 +12,7 @@ from qdrant_client import AsyncQdrantClient
 import json
 import config
 import redis.asyncio as aioredis
+import embeddings
 
 logger = logging.getLogger("semantic_router")
 
